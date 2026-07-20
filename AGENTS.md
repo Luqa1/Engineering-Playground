@@ -81,27 +81,36 @@ Rules:
 - Use constructor dependency injection.
 - Prefer explicit and readable code over compact implementations.
 
-## Layering
+## Architecture Philosophy
 
-All PoCs should follow the same dependency direction.
-
-Architecture:
-
-API
-↓
-Application (optional)
-↓
-Domain
-↓
-Infrastructure
+The goal of this repository is to demonstrate engineering concepts, not architectural styles.
 
 Rules:
 
-- Dependencies must always point inward.
-- The Domain project must not depend on any other project.
+- Keep every PoC as small as possible while remaining production-inspired.
+- Prefer simple architecture over unnecessary abstractions.
+- Do not introduce additional layers unless they are required by the pattern being demonstrated.
+- Avoid overengineering.
+- Every project should have a clear responsibility.
+
+## Layering
+
+The standard project structure is:
+
+API
+
+Domain
+
+Infrastructure
+
+Worker
+
+Rules:
+
+- Domain must not depend on any other project.
 - Infrastructure depends on Domain.
 - API depends on Domain and Infrastructure.
 - Worker depends on Domain and Infrastructure.
 - Keep business rules inside the Domain project.
-- Infrastructure contains persistence, messaging and external integrations.
-- Avoid unnecessary abstractions and overengineering.
+- Keep persistence and external integrations inside Infrastructure.
+- Dependencies must always point toward the Domain layer.
