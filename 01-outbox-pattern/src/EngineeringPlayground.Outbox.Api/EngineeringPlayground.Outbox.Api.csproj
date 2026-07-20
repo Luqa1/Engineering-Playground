@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <ProjectReference Include="..\EngineeringPlayground.Outbox.Domain\EngineeringPlayground.Outbox.Domain.csproj" />
     <ProjectReference Include="..\EngineeringPlayground.Outbox.Infrastructure\EngineeringPlayground.Outbox.Infrastructure.csproj" />
   </ItemGroup>

@@ -40,6 +40,8 @@ Create a minimal runnable application.
 
 ## M3 – Business Domain
 
+**Status: Completed**
+
 ### Goal
 
 Implement a minimal business scenario.
