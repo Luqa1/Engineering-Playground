@@ -1,0 +1,129 @@
+# .NET build outputs
+[Bb]in/
+[Oo]bj/
+artifacts/
+out/
+
+# Visual Studio
+.vs/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.opendb
+*.userprefs
+
+# JetBrains Rider and ReSharper
+.idea/
+*.sln.iml
+_ReSharper*/
+_ReSharper.Caches/
+*.ReSharper
+*.DotSettings.user
+
+# Visual Studio Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+*.code-workspace
+
+# Test results and coverage
+TestResults/
+test-results/
+coverage/
+coverage-results/
+coverage-report/
+coverage-reports/
+htmlcov/
+*.coverage
+*.coveragexml
+*.coverage.json
+*.lcov
+*.cobertura.xml
+*.opencover.xml
+lcov.info
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Temporary and backup files
+tmp/
+temp/
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+!packages/build/
+*.nuget.props
+*.nuget.targets
+
+# Benchmark and profiling output
+BenchmarkDotNet.Artifacts/
+*.diagsession
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# Publish output
+publish/
+*.Publish.xml
+*.pubxml.user
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+secrets.json
+appsettings.Local.json
+appsettings.*.local.json
+
+# Docker local data and overrides
+.docker/
+docker-data/
+docker_data/
+docker-volumes/
+docker_volumes/
+volumes/
+.docker-data/
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# PostgreSQL local data and dumps
+pgdata/
+postgres-data/
+postgres_data/
+*.dump
+*.sql.gz
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Operating system metadata
+.DS_Store
+.AppleDouble
+.LSOverride
