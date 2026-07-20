@@ -1,1 +1,5 @@
-# TODO
+services:
+  api: {}
+  worker: {}
+  postgres: {}
+  rabbitmq: {}

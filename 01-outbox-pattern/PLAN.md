@@ -21,6 +21,8 @@ Prepare the repository structure and initial documentation.
 
 ## M2 – Running Application
 
+**Status: Completed**
+
 ### Goal
 
 Create a minimal runnable application.

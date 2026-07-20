@@ -52,3 +52,16 @@ Avoid:
 - combining multiple engineering concepts in one PoC
 - unnecessary infrastructure
 
+## Project naming
+
+Every project must use the following naming convention:
+
+EngineeringPlayground.<Topic>.<Project>
+
+Examples:
+
+EngineeringPlayground.Outbox.Api
+EngineeringPlayground.Outbox.Worker
+EngineeringPlayground.Outbox.Domain
+EngineeringPlayground.Outbox.Infrastructure
+EngineeringPlayground.Outbox.IntegrationTests
