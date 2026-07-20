@@ -65,3 +65,43 @@ EngineeringPlayground.Outbox.Worker
 EngineeringPlayground.Outbox.Domain
 EngineeringPlayground.Outbox.Infrastructure
 EngineeringPlayground.Outbox.IntegrationTests
+
+## API Conventions
+
+The repository uses standard ASP.NET Core Controllers by default.
+
+Rules:
+
+- Use ASP.NET Core Controllers by default.
+- Do not use Minimal APIs unless a PoC explicitly demonstrates them.
+- Keep controllers thin.
+- Business logic must not live inside controllers.
+- Use request and response DTOs.
+- Never expose EF Core entities directly from API endpoints.
+- Use constructor dependency injection.
+- Prefer explicit and readable code over compact implementations.
+
+## Layering
+
+All PoCs should follow the same dependency direction.
+
+Architecture:
+
+API
+↓
+Application (optional)
+↓
+Domain
+↓
+Infrastructure
+
+Rules:
+
+- Dependencies must always point inward.
+- The Domain project must not depend on any other project.
+- Infrastructure depends on Domain.
+- API depends on Domain and Infrastructure.
+- Worker depends on Domain and Infrastructure.
+- Keep business rules inside the Domain project.
+- Infrastructure contains persistence, messaging and external integrations.
+- Avoid unnecessary abstractions and overengineering.
