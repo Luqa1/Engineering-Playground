@@ -21,6 +21,7 @@ services:
       RabbitMq__Username: ${RABBITMQ_USER}
       RabbitMq__Password: ${RABBITMQ_PASSWORD}
       OutboxProcessor__PollingInterval: ${OUTBOX_POLLING_INTERVAL}
+      OutboxProcessor__MaxRetriesCount: ${OUTBOX_MAX_RETRIES_COUNT}
     depends_on:
       - postgres
       - rabbitmq

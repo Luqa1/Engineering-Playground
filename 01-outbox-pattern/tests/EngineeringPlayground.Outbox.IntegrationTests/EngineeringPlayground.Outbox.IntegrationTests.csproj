@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\EngineeringPlayground.Outbox.Api\EngineeringPlayground.Outbox.Api.csproj" />
+    <ProjectReference Include="..\..\src\EngineeringPlayground.Outbox.Worker\EngineeringPlayground.Outbox.Worker.csproj" />
   </ItemGroup>
 
 </Project>
