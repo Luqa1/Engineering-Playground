@@ -21,4 +21,16 @@ public sealed class OutboxMessage
     public DateTime? ProcessedAtUtc { get; private set; }
     public string? Error { get; private set; }
     public int RetryCount { get; private set; }
+
+    public void MarkAsProcessed(DateTime processedAtUtc)
+    {
+        ProcessedAtUtc = processedAtUtc;
+        Error = null;
+    }
+
+    public void MarkAsFailed(string error)
+    {
+        Error = error;
+        RetryCount++;
+    }
 }

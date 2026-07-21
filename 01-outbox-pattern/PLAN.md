@@ -72,6 +72,8 @@ Persist business data and integration events atomically.
 
 ## M5 – Outbox Processor
 
+**Status: Completed**
+
 ### Goal
 
 Publish pending integration events asynchronously.

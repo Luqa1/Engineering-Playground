@@ -1,6 +1,29 @@
 services:
-  api: {}
-  worker: {}
+  api:
+    build:
+      context: .
+      dockerfile: src/EngineeringPlayground.Outbox.Api/Dockerfile
+    environment:
+      ASPNETCORE_HTTP_PORTS: 8080
+      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+    ports:
+      - "${API_HTTP_PORT}:8080"
+    depends_on:
+      - postgres
+  worker:
+    build:
+      context: .
+      dockerfile: src/EngineeringPlayground.Outbox.Worker/Dockerfile
+    environment:
+      ConnectionStrings__PostgreSQL: Host=postgres;Port=5432;Database=${POSTGRES_DATABASE};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: ${RABBITMQ_PORT}
+      RabbitMq__Username: ${RABBITMQ_USER}
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      OutboxProcessor__PollingInterval: ${OUTBOX_POLLING_INTERVAL}
+    depends_on:
+      - postgres
+      - rabbitmq
   postgres:
     image: postgres:18
     environment:
@@ -11,7 +34,14 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
-  rabbitmq: {}
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
 
 volumes:
   postgres-data:
