@@ -8,6 +8,8 @@ Demonstrate how the Outbox Pattern supports reliable integration event publishin
 
 ## M1 – Repository Skeleton
 
+**Status: Completed**
+
 ### Goal
 
 Prepare the repository structure and initial documentation.
@@ -115,5 +117,4 @@ Complete the documentation.
 
 - Architecture diagram
 - Sequence diagram
-- Screenshots
 - Final README

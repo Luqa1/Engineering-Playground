@@ -51,7 +51,7 @@ public sealed class OutboxProcessor : BackgroundService
         var messages = await GetEligibleMessages(dbContext.OutboxMessages, _maxRetriesCount)
             .ToListAsync(cancellationToken);
 
-        _logger.LogInformation("Found {PendingMessageCount} pending Outbox messages", messages.Count);
+        _logger.LogDebug("Found {PendingMessageCount} pending Outbox messages", messages.Count);
 
         foreach (var message in messages)
         {
