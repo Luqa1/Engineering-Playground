@@ -54,7 +54,7 @@ public sealed class OrdersController : ControllerBase
 
         var outboxMessage = new OutboxMessage(
             Guid.NewGuid(),
-            nameof(OrderCreatedIntegrationEvent),
+            "order.created",
             JsonSerializer.Serialize(integrationEvent),
             order.CreatedAtUtc);
 
