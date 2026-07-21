@@ -114,3 +114,135 @@ Rules:
 - Keep business rules inside the Domain project.
 - Keep persistence and external integrations inside Infrastructure.
 - Dependencies must always point toward the Domain layer.
+
+# Engineering Conventions
+
+The following conventions apply to every Proof of Concept unless explicitly overridden.
+
+## Technology
+
+- .NET 10
+- C#
+- PostgreSQL
+- Docker Compose
+- Visual Studio 2022
+
+## API
+
+- Use ASP.NET Core Controllers by default.
+- Do not use Minimal APIs unless a PoC explicitly demonstrates them.
+- Keep controllers thin.
+- Use request and response DTOs.
+- Never expose EF Core entities directly from API endpoints.
+- Use constructor dependency injection.
+
+## Architecture
+
+- Keep every PoC as small as possible while remaining production-inspired.
+- Demonstrate one engineering concept per PoC.
+- Avoid unnecessary abstractions.
+- Avoid overengineering.
+- Every project should have a single clear responsibility.
+
+## Layering
+
+Projects should follow this dependency direction:
+
+API
+↓
+Domain
+↑
+Infrastructure
+
+Worker
+↓
+Domain
+↑
+Infrastructure
+
+Rules:
+
+- Domain must not depend on any other project.
+- Infrastructure depends on Domain.
+- API depends on Domain and Infrastructure.
+- Worker depends on Domain and Infrastructure.
+
+## Entity Framework Core
+
+- Configure entities using IEntityTypeConfiguration<T>.
+- Keep DbContext inside Infrastructure.
+- Keep EF Core configuration outside Program.cs.
+
+## Messaging
+
+- Integration event names must be stable and independent of .NET type names.
+- Use lowercase dot notation.
+
+Examples:
+
+- order.created
+- order.cancelled
+- payment.completed
+
+Never store:
+
+- CLR type names
+- Assembly-qualified names
+- Namespace-qualified names
+
+## Documentation
+
+Every completed PoC should include:
+
+- README
+- architecture diagram
+- sequence diagram (when applicable)
+- Docker Compose
+- screenshots (when useful)
+
+Every README should explain:
+
+- the problem
+- why the pattern exists
+- implementation
+- trade-offs
+- when to use
+- when not to use
+
+# Decision Making
+
+## Simplicity First
+
+Do not introduce new:
+
+- libraries
+- architectural patterns
+- abstractions
+- project structure
+- frameworks
+
+unless they are required to demonstrate the engineering concept implemented by the current PoC.
+
+## Choosing Between Multiple Solutions
+
+When multiple valid solutions exist:
+
+- choose the simplest solution;
+- choose the solution that best supports the educational goal of the PoC;
+- prefer readability over flexibility;
+- prefer explicit code over clever code;
+- avoid optimizing for hypothetical future requirements.
+
+## Scope
+
+Implement only what is required for the current milestone.
+
+Do not anticipate future milestones.
+
+Avoid adding infrastructure or extensibility that is not yet needed.
+
+## Goal
+
+The purpose of this repository is to teach engineering concepts through small, production-inspired examples.
+
+Every implementation decision should support that goal.
