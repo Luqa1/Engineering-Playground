@@ -56,6 +56,8 @@ Implement a minimal business scenario.
 
 ## M4 – Transactional Outbox
 
+**Status: Completed**
+
 ### Goal
 
 Persist business data and integration events atomically.

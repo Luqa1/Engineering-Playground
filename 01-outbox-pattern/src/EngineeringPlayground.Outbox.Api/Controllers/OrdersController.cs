@@ -2,6 +2,7 @@ using EngineeringPlayground.Outbox.Api.Models;
 using EngineeringPlayground.Outbox.Domain;
 using EngineeringPlayground.Outbox.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace EngineeringPlayground.Outbox.Api.Controllers;
 
@@ -45,7 +46,20 @@ public sealed class OrdersController : ControllerBase
             request.TotalAmount,
             DateTime.UtcNow);
 
+        var integrationEvent = new OrderCreatedIntegrationEvent(
+            order.Id,
+            order.CustomerId,
+            order.TotalAmount,
+            order.CreatedAtUtc);
+
+        var outboxMessage = new OutboxMessage(
+            Guid.NewGuid(),
+            nameof(OrderCreatedIntegrationEvent),
+            JsonSerializer.Serialize(integrationEvent),
+            order.CreatedAtUtc);
+
         _dbContext.Orders.Add(order);
+        _dbContext.OutboxMessages.Add(outboxMessage);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         var response = new OrderResponse(
