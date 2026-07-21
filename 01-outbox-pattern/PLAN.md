@@ -88,6 +88,8 @@ Publish pending integration events asynchronously.
 
 ## M6 – Failure Scenarios
 
+**Status: Completed**
+
 ### Goal
 
 Demonstrate why the Outbox Pattern exists.
