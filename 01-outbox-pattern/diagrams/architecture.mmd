@@ -1,0 +1,7 @@
+flowchart TD
+    Client[Client] --> API[API]
+    API --> PostgreSQL[(PostgreSQL)]
+    PostgreSQL --> Orders[(Orders)]
+    PostgreSQL --> Outbox[(OutboxMessages)]
+    Outbox --> Worker[Worker]
+    Worker --> RabbitMQ[RabbitMQ]

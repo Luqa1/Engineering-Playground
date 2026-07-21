@@ -105,6 +105,8 @@ Demonstrate why the Outbox Pattern exists.
 
 ## M7 – Documentation
 
+**Status: Completed**
+
 ### Goal
 
 Complete the documentation.

@@ -1,0 +1,22 @@
+sequenceDiagram
+    actor Client
+    participant API
+    participant PostgreSQL
+    participant Worker
+    participant RabbitMQ
+
+    Client->>API: POST /orders
+    API->>API: Create Order and OutboxMessage
+    API->>PostgreSQL: Save Order and OutboxMessage
+    Note over API,PostgreSQL: Single database transaction
+    PostgreSQL-->>API: Commit
+    API-->>Client: 201 Created
+
+    loop Polling cycle
+        Worker->>PostgreSQL: Query pending OutboxMessages
+        PostgreSQL-->>Worker: Pending messages
+    end
+    Worker->>RabbitMQ: Publish order.created
+    RabbitMQ-->>Worker: Publish completed
+    Worker->>PostgreSQL: Set ProcessedAtUtc
+    PostgreSQL-->>Worker: Update committed
