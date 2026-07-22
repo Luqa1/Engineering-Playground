@@ -33,3 +33,5 @@ Each PoC README answers:
 6. CQRS
 
 See [ROADMAP.md](ROADMAP.md) for the planned PoCs. More engineering topics will be added over time.
+
+The complete Outbox Pattern PoC can be started from its directory with `docker compose up --build`. See its README for testing and cleanup commands.

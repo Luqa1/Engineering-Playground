@@ -110,33 +110,41 @@ Production systems may add a persisted `NextAttemptAtUtc`, exponential or Fibona
 
 ### Prerequisites
 
-- .NET 10 SDK
 - Docker with Docker Compose
 - PowerShell (for the example commands)
 
 Run all commands from `01-outbox-pattern`.
 
-### Configure and start dependencies
+### Start the complete PoC
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up -d postgres rabbitmq
+docker compose up --build
 ```
 
-### Apply the database migration
+This single command starts PostgreSQL and RabbitMQ, waits for both to become healthy, starts the API, applies pending EF Core migrations automatically, and starts the Worker. The complete PoC is then ready for testing. Compose provides local-development defaults, so copying `.env.example` is optional; copy it to `.env` only when you want to override those values.
+
+The API is the only component that applies migrations. It does so at startup in every environment except `Production`, before serving requests. The Worker never applies migrations. Production deployments must apply migrations through a controlled deployment process.
+
+### Common commands
 
 ```powershell
-dotnet ef database update --project src/EngineeringPlayground.Outbox.Infrastructure --startup-project src/EngineeringPlayground.Outbox.Api
-```
-
-The default local connection string targets PostgreSQL at `localhost:5432`.
-
-### Start the application
-
-```powershell
-docker compose up --build -d api worker
+docker compose up --build
+docker compose down
+docker compose down -v
 docker compose logs -f api worker
 ```
+
+Use `docker compose up --build` again after source changes. `docker compose down -v` also removes the local PostgreSQL volume and all PoC data.
+
+### Optional development outside Docker Compose
+
+```powershell
+docker compose up -d postgres rabbitmq
+dotnet run --project src/EngineeringPlayground.Outbox.Api
+dotnet run --project src/EngineeringPlayground.Outbox.Worker
+```
+
+The API uses the local connection string from `appsettings.json` and applies migrations automatically when its environment is not `Production`.
 
 ### Create an Order
 
@@ -164,7 +172,7 @@ docker compose exec postgres psql -U postgres -d outbox -c 'SELECT "Id", "Type",
 
 ## Verifying the Pattern
 
-1. Start PostgreSQL and RabbitMQ, apply the migration, and start the API and Worker as described above.
+1. Start the complete PoC with `docker compose up --build`.
 2. Stop the broker: `docker compose stop rabbitmq`.
 3. Create an Order with `POST /orders`. The API should still return `201 Created`.
 4. Query both tables. The Order and Outbox message should exist; `ProcessedAtUtc` should be null.

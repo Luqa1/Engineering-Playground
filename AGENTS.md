@@ -246,3 +246,63 @@ Avoid adding infrastructure or extensibility that is not yet needed.
 The purpose of this repository is to teach engineering concepts through small, production-inspired examples.
 
 Every implementation decision should support that goal.
+
+## Local Development
+
+Future PoCs should provide the best possible local developer experience while remaining simple.
+
+### Docker Compose
+
+Every PoC should be runnable locally using a single command:
+
+```bash
+docker compose up --build
+```
+
+A developer should not be required to manually:
+
+- create the database;
+- execute EF Core migrations;
+- start individual services in a specific order.
+
+Docker Compose should orchestrate the complete local environment whenever practical.
+
+### Automatic EF Core migrations
+
+When a PoC uses Entity Framework Core:
+
+- the API is responsible for applying EF Core migrations during startup;
+- automatic migrations are enabled only for non-production environments;
+- Production must never apply migrations automatically;
+- the Worker and other background services must never execute migrations.
+
+Use EF Core migrations.
+
+Do not use:
+
+- EnsureCreated()
+- automatic schema generation outside EF Core migrations.
+
+### Service startup
+
+Docker Compose should:
+
+- start all required infrastructure services;
+- use healthchecks whenever practical;
+- start application services in a reliable order.
+
+Avoid startup scripts if Docker Compose healthchecks and application startup logic are sufficient.
+
+### Documentation
+
+Every PoC README should make the primary local startup workflow:
+
+```bash
+docker compose up --build
+```
+
+The README should clearly explain:
+
+- what services are started;
+- that migrations are applied automatically in non-production environments;
+- that Production environments require controlled migration execution.
