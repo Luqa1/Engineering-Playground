@@ -26,7 +26,7 @@ Each PoC README answers:
 ## Roadmap
 
 1. [Outbox Pattern](01-outbox-pattern/) — atomically persists business data and integration events, then publishes them asynchronously. **Status: Completed.**
-2. Structured Logging & Observability
+2. [Structured Logging & Observability](02-structured-logging/) — demonstrates production troubleshooting with structured, contextual, and centralized logs. **Status: Work in Progress.**
 3. Optimistic Concurrency
 4. Distributed Lock
 5. Saga Pattern
