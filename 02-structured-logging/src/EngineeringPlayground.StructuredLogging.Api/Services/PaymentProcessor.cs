@@ -1,11 +1,13 @@
 using EngineeringPlayground.StructuredLogging.Domain.Payments;
 using EngineeringPlayground.StructuredLogging.Infrastructure.Persistence;
+using Microsoft.Extensions.Logging;
 
 namespace EngineeringPlayground.StructuredLogging.Api.Services;
 
 public sealed class PaymentProcessor(
     IPaymentGateway paymentGateway,
-    PaymentDbContext dbContext)
+    PaymentDbContext dbContext,
+    ILogger<PaymentProcessor> logger)
 {
     public async Task<Payment> ProcessAsync(
         Guid customerId,
@@ -15,12 +17,48 @@ public sealed class PaymentProcessor(
     {
         var payment = Payment.Create(customerId, amount, currency);
 
-        await paymentGateway.ProcessAsync(payment, cancellationToken);
-        payment.MarkCompleted();
+        using var paymentScope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["PaymentId"] = payment.Id,
+            ["CustomerId"] = payment.CustomerId,
+            ["Operation"] = "ProcessPayment"
+        });
 
-        dbContext.Payments.Add(payment);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Payment processing started with amount {Amount} {Currency} and status {PaymentStatus}",
+            payment.Amount,
+            payment.Currency,
+            payment.Status);
 
-        return payment;
+        try
+        {
+            await paymentGateway.ProcessAsync(payment, cancellationToken);
+
+            var previousStatus = payment.Status;
+            payment.MarkCompleted();
+
+            logger.LogInformation(
+                "Payment status changed from {PreviousPaymentStatus} to {PaymentStatus}",
+                previousStatus,
+                payment.Status);
+
+            dbContext.Payments.Add(payment);
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation("Payment persisted");
+
+            logger.LogInformation("Payment processing completed");
+
+            return payment;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(
+                exception,
+                "Payment processing failed with status {PaymentStatus}",
+                payment.Status);
+
+            throw;
+        }
     }
 }

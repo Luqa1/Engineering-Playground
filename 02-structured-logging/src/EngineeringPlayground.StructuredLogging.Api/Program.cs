@@ -1,7 +1,12 @@
 using EngineeringPlayground.StructuredLogging.Api.Services;
 using EngineeringPlayground.StructuredLogging.Infrastructure;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services));
 
 builder.Services.AddControllers();
 
@@ -17,6 +22,8 @@ if (!app.Environment.IsProduction())
 {
     await app.Services.ApplyMigrationsAsync();
 }
+
+app.UseSerilogRequestLogging();
 
 app.MapControllers();
 

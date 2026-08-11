@@ -46,6 +46,8 @@ Keep the business scenario intentionally small.
 
 ## M3 – Structured Logging
 
+Status: Completed
+
 Goal:
 
 Replace unstructured diagnostic output with meaningful structured application logs.
