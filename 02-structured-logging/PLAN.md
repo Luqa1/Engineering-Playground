@@ -25,6 +25,8 @@ Expected outcome:
 
 ## M2 – Running Application
 
+Status: Completed
+
 Goal:
 
 Create a small .NET 10 application that provides a realistic flow suitable for demonstrating logging.

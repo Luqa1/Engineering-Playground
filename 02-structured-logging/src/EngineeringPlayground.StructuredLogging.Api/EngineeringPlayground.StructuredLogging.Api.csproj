@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EngineeringPlayground.StructuredLogging.Domain\EngineeringPlayground.StructuredLogging.Domain.csproj" />
+    <ProjectReference Include="..\EngineeringPlayground.StructuredLogging.Infrastructure\EngineeringPlayground.StructuredLogging.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
