@@ -66,6 +66,8 @@ Logs should capture useful domain and technical context without logging sensitiv
 
 ## M4 – Correlation & Context
 
+Status: Completed
+
 Goal:
 
 Make all logs belonging to the same request easy to identify and query.

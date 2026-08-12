@@ -1,3 +1,4 @@
+using EngineeringPlayground.StructuredLogging.Api.Middleware;
 using EngineeringPlayground.StructuredLogging.Api.Services;
 using EngineeringPlayground.StructuredLogging.Infrastructure;
 using Serilog;
@@ -23,6 +24,7 @@ if (!app.Environment.IsProduction())
     await app.Services.ApplyMigrationsAsync();
 }
 
+app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseSerilogRequestLogging();
 
 app.MapControllers();

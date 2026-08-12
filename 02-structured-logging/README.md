@@ -2,7 +2,7 @@
 
 This Proof of Concept will demonstrate how structured, contextual, and centralized logs improve production troubleshooting.
 
-> **Work in Progress:** Structured application logging is available. Correlation and centralized logging will be added in later milestones.
+> **Work in Progress:** Structured application logging and request correlation are available. Centralized logging will be added in a later milestone.
 
 ## Problem
 
@@ -61,7 +61,25 @@ TODO.
 
 ## Correlation and context
 
-TODO.
+Structured information is attached at the narrowest useful level:
+
+### Request context
+
+`CorrelationId` identifies every log produced while one HTTP request is processed.
+
+### Operation context
+
+`PaymentId`, `CustomerId`, and `Operation` describe the payment-processing operation. They are added once when that operation begins and are inherited by its nested logs.
+
+### Event-specific data
+
+`Amount`, `Currency`, and `PaymentStatus` describe an individual event and remain properties of that event.
+
+Separating these levels avoids repeating stable request and operation properties in every log statement while keeping all values structured and searchable.
+
+Clients may send a correlation identifier in the `X-Correlation-ID` request header. The API preserves a valid value, generates a compact GUID when the header is missing or invalid, returns the identifier in the `X-Correlation-ID` response header, and includes it in every log for that request. Externally supplied values are length-limited because correlation is diagnostic metadata, not trusted business data.
+
+In a distributed system, the correlation identifier would normally be propagated to downstream services through HTTP or message headers. The simulated payment gateway in this PoC runs in-process, so distributed propagation is intentionally not implemented.
 
 ## Centralized logging
 
