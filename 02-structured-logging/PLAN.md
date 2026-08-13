@@ -86,6 +86,8 @@ Avoid unnecessary tracing infrastructure.
 
 ## M5 – Centralized Logging
 
+Status: Completed
+
 Goal:
 
 Make application logs searchable outside individual containers.

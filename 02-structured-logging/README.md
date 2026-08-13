@@ -2,7 +2,7 @@
 
 This Proof of Concept will demonstrate how structured, contextual, and centralized logs improve production troubleshooting.
 
-> **Work in Progress:** Structured application logging and request correlation are available. Centralized logging will be added in a later milestone.
+> **Work in Progress:** Structured application logging, request correlation, and centralized log search are available. The diagnostic scenario and final documentation will be added in later milestones.
 
 ## Problem
 
@@ -83,7 +83,37 @@ In a distributed system, the correlation identifier would normally be propagated
 
 ## Centralized logging
 
-TODO.
+Container console logs are useful during development, but they become difficult to search once events are spread across requests, containers, and restarts. The API therefore ships the same structured Serilog events directly to Loki, while retaining console output for immediate local inspection. The sink batches delivery asynchronously, so a temporary Loki outage does not make payment processing fail.
+
+Loki stores and queries the logs. Grafana provides the Explore interface used to search them, and Docker Compose provisions Loki as the default Grafana data source automatically. Structured fields such as `CorrelationId`, `PaymentId`, `CustomerId`, `Operation`, and `PaymentStatus` remain in each JSON log line after centralization.
+
+Only the low-cardinality `service_name` and `level` values are Loki labels. Request, payment, and customer identifiers are deliberately not labels because creating a stream for every unique identifier would increase Loki index cardinality. They remain searchable JSON fields instead.
+
+In Grafana Explore, select the provisioned `Loki` data source and use these queries:
+
+All Structured Logging API logs:
+
+```logql
+{service_name="structured-logging-api"}
+```
+
+All logs for one request:
+
+```logql
+{service_name="structured-logging-api"} | json | CorrelationId="replace-with-correlation-id"
+```
+
+All logs for one payment:
+
+```logql
+{service_name="structured-logging-api"} | json | PaymentId="replace-with-payment-id"
+```
+
+Error-level logs:
+
+```logql
+{service_name="structured-logging-api", level="error"}
+```
 
 ## Failure scenarios
 
@@ -103,23 +133,25 @@ TODO.
 
 ## Running the example
 
-Start the API and PostgreSQL from this directory:
+Start the API, PostgreSQL, Loki, and Grafana from this directory:
 
 ```bash
 docker compose up --build
 ```
 
-Docker Compose waits for PostgreSQL to become healthy before starting the API. In non-production environments, the API applies pending EF Core migrations automatically. Production environments require migrations to be applied through a controlled deployment process.
+Docker Compose waits for PostgreSQL to become healthy before starting the API. In non-production environments, the API applies pending EF Core migrations automatically. Production environments require migrations to be applied through a controlled deployment process. Loki stores logs in a local Docker volume, and Grafana starts with Loki already provisioned as its default data source.
 
 Create a payment:
 
 ```bash
-curl -X POST http://localhost:8080/payments \
+curl -i -X POST http://localhost:8080/payments \
   -H "Content-Type: application/json" \
   -d '{"customerId":"11111111-1111-1111-1111-111111111111","amount":100.00,"currency":"EUR"}'
 ```
 
-The response contains the payment identifier, customer identifier, amount, currency, `Completed` status, and creation timestamp.
+The response contains the payment identifier, customer identifier, amount, currency, `Completed` status, creation timestamp, and an `X-Correlation-ID` header.
+
+Copy the correlation identifier, open [Grafana](http://localhost:3000), and sign in with the local credentials from `.env` or the defaults `admin` / `admin`. Open **Explore**, select the provisioned **Loki** data source, and run the correlation query from the centralized logging section with the copied value.
 
 Inspect the API's JSON logs locally:
 
