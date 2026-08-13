@@ -1,5 +1,6 @@
 using EngineeringPlayground.StructuredLogging.Api.Contracts;
 using EngineeringPlayground.StructuredLogging.Api.Services;
+using EngineeringPlayground.StructuredLogging.Domain.Payments;
 using Microsoft.AspNetCore.Mvc;
 
 namespace EngineeringPlayground.StructuredLogging.Api.Controllers;
@@ -11,6 +12,7 @@ public sealed class PaymentsController(PaymentProcessor paymentProcessor) : Cont
     [HttpPost]
     [ProducesResponseType<PaymentResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult<PaymentResponse>> Create(
         CreatePaymentRequest request,
         CancellationToken cancellationToken)
@@ -30,11 +32,22 @@ public sealed class PaymentsController(PaymentProcessor paymentProcessor) : Cont
             return ValidationProblem(ModelState);
         }
 
-        var payment = await paymentProcessor.ProcessAsync(
-            request.CustomerId,
-            request.Amount,
-            request.Currency,
-            cancellationToken);
+        Payment payment;
+
+        try
+        {
+            payment = await paymentProcessor.ProcessAsync(
+                request.CustomerId,
+                request.Amount,
+                request.Currency,
+                cancellationToken);
+        }
+        catch (PaymentGatewayException)
+        {
+            return Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "Payment processing could not be completed.");
+        }
 
         var response = new PaymentResponse(
             payment.Id,

@@ -107,6 +107,8 @@ The entire environment must remain runnable with one Docker Compose command.
 
 ## M6 – Diagnostic Scenario
 
+Status: Completed
+
 Goal:
 
 Demonstrate the practical difference between having logs and having useful structured logs.

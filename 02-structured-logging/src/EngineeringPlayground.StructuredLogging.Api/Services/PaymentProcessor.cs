@@ -51,6 +51,17 @@ public sealed class PaymentProcessor(
 
             return payment;
         }
+        catch (PaymentGatewayException exception)
+        {
+            logger.LogError(
+                exception,
+                "Payment gateway invocation failed with amount {Amount} {Currency} and status {PaymentStatus}",
+                payment.Amount,
+                payment.Currency,
+                payment.Status);
+
+            throw;
+        }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(

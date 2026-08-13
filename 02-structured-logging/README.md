@@ -2,7 +2,7 @@
 
 This Proof of Concept will demonstrate how structured, contextual, and centralized logs improve production troubleshooting.
 
-> **Work in Progress:** Structured application logging, request correlation, and centralized log search are available. The diagnostic scenario and final documentation will be added in later milestones.
+> **Work in Progress:** Structured application logging, request correlation, centralized log search, and the diagnostic scenario are available. Final documentation will be added in M7.
 
 ## Problem
 
@@ -100,24 +100,86 @@ All Structured Logging API logs:
 All logs for one request:
 
 ```logql
-{service_name="structured-logging-api"} | json | CorrelationId="replace-with-correlation-id"
+{service_name="structured-logging-api"}
+| json
+| CorrelationId="<value>"
 ```
 
 All logs for one payment:
 
 ```logql
-{service_name="structured-logging-api"} | json | PaymentId="replace-with-payment-id"
+{service_name="structured-logging-api"}
+| json
+| PaymentId="<value>"
 ```
 
 Error-level logs:
 
 ```logql
-{service_name="structured-logging-api", level="error"}
+{service_name="structured-logging-api"}
+| json
+| _l="Error"
 ```
 
-## Failure scenarios
+`RenderedCompactJsonFormatter` writes a non-information log level in the JSON field `@l`. Loki's automatic JSON parser normalizes that field to the queryable name `_l`, which is why the error query filters on `_l="Error"`. These request, payment, and error queries were verified against the Loki configuration used by this stack.
 
-TODO.
+## Diagnostic scenario
+
+The simulated payment gateway fails deterministically when `Amount` is exactly `13.37`. Every other valid amount follows the unchanged successful flow. The failure is a controlled `PaymentGatewayException` with a concrete simulated-gateway reason, and the payment processor records that exception once while its structured operation scope is still active.
+
+To reproduce and diagnose the failure:
+
+1. Start the complete stack:
+
+   ```bash
+   docker compose up --build
+   ```
+
+2. Send a payment request with the diagnostic amount:
+
+   ```bash
+   curl -i -X POST http://localhost:8080/payments \
+     -H "Content-Type: application/json" \
+     -d '{"customerId":"11111111-1111-1111-1111-111111111111","amount":13.37,"currency":"EUR"}'
+   ```
+
+   The API returns `500 Internal Server Error` with a generic problem-details body. Internal exception details are not returned to the caller. The response still contains `X-Correlation-ID` so the caller can report a diagnostic identifier.
+
+3. Copy the `X-Correlation-ID` response-header value.
+
+4. Open [Grafana Explore](http://localhost:3000/explore) and select the provisioned `Loki` data source.
+
+5. Find every event for the failed request:
+
+   ```logql
+   {service_name="structured-logging-api"}
+   | json
+   | CorrelationId="<correlation-id>"
+   ```
+
+6. Read `PaymentId`, `CustomerId`, and `Operation` from the payment events. The trail shows payment processing starting, the `SimulatedPaymentGateway` invocation starting, the gateway failure, and the HTTP request completing with status `500`.
+
+7. Inspect the payment-processor error event. Its exception identifies the simulated gateway failure and the diagnostic amount. The same event retains `CorrelationId`, `PaymentId`, `CustomerId`, `Operation`, `Amount`, `Currency`, and `PaymentStatus` as structured properties.
+
+8. Optionally narrow the search to the affected payment:
+
+   ```logql
+   {service_name="structured-logging-api"}
+   | json
+   | PaymentId="<payment-id>"
+   ```
+
+9. To inspect error-level events across requests, use the formatter-aware level query:
+
+   ```logql
+   {service_name="structured-logging-api"}
+   | json
+   | _l="Error"
+   ```
+
+The payment object is created in memory before the gateway call, which gives the diagnostic trail a `PaymentId`. The existing flow persists only after a successful gateway result, so the failed payment is not stored in PostgreSQL. No transaction or persistence redesign is introduced for this scenario.
+
+With only plain-text, uncorrelated logs, an engineer would need to align timestamps and infer which interleaved gateway and HTTP messages belong together. Here, `CorrelationId` reconstructs the request, `PaymentId` narrows the affected operation, and the exception plus structured fields establish the customer, failure location, payment state, and concrete reason without relying on message-text searches.
 
 ## Trade-offs
 
