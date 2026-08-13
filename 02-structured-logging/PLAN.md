@@ -10,6 +10,8 @@ The PoC should focus on the engineering problem and diagnostic workflow, not mer
 
 ## M1 – Repository Skeleton
 
+Status: Completed
+
 Goal:
 
 Prepare the PoC structure and implementation plan.
@@ -151,6 +153,8 @@ Expected outcome:
 ---
 
 ## Final Review
+
+Status: Completed
 
 Perform a focused engineering review after M7.
 

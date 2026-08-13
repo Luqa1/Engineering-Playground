@@ -13,16 +13,16 @@ sequenceDiagram
     API->>Processor: Process payment
     activate Processor
     Note over Processor: Operation scope: PaymentId, CustomerId, Operation
-    Processor-->>Loki: Structured payment-start event
+    Processor-->>Loki: Structured payment-start event via Serilog
     Processor->>Gateway: Invoke gateway
     activate Gateway
-    Gateway-->>Loki: Structured invocation-start event
+    Gateway-->>Loki: Structured invocation-start event via Serilog
     Gateway--xProcessor: PaymentGatewayException
     deactivate Gateway
-    Processor-->>Loki: Structured error with operation context
+    Processor-->>Loki: Structured error with operation context via Serilog
     Processor--xAPI: PaymentGatewayException
     deactivate Processor
-    API-->>Loki: Structured HTTP 500 completion event
+    API-->>Loki: Structured HTTP 500 completion event via Serilog
     API-->>Client: 500 + X-Correlation-ID
     Client-->>Engineer: Report X-Correlation-ID
     Engineer->>Grafana: Search by CorrelationId

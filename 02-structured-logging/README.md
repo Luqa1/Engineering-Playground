@@ -2,7 +2,7 @@
 
 ## Overview
 
-This Proof of Concept demonstrates how structured logging, contextual logging, request correlation, and centralized log search support production-style diagnostics in an ASP.NET Core API. A deliberately small payment flow provides enough concurrency and business context to make the diagnostic workflow realistic.
+This Proof of Concept demonstrates how structured logging, contextual logging, request correlation, and centralized log search support production-style diagnostics in an ASP.NET Core API. A deliberately small payment flow provides enough request and business context to make the diagnostic workflow realistic.
 
 The PoC is about designing useful logs and investigating a failure with Loki and Grafana. It is not a complete observability platform: metrics, distributed tracing, alerting, and OpenTelemetry are outside its scope.
 
@@ -44,6 +44,8 @@ See the [architecture diagram](diagrams/architecture.mmd) and the [diagnostic se
 
 - **Client** sends `POST /payments` and receives `X-Correlation-ID` in the response.
 - **API** validates the request, coordinates payment processing, and applies EF Core migrations at startup in non-production environments.
+- **Domain** defines the payment rules and the gateway contract without depending on persistence or logging infrastructure.
+- **Infrastructure** implements PostgreSQL persistence and the deterministic simulated gateway.
 - **PostgreSQL** stores successfully completed payments.
 - **Serilog** is the logging provider. Application code depends on `ILogger<T>`; it does not call Serilog directly.
 - **Loki** receives the structured Serilog events and provides centralized storage and LogQL search.
@@ -73,9 +75,9 @@ The correlation header is:
 X-Correlation-ID
 ```
 
-The API preserves a valid incoming value. If the header is absent, empty, repeated, longer than 128 characters, or contains control characters, middleware generates a 32-character GUID value. The selected value is returned in `X-Correlation-ID`, and every log generated during that request contains it.
+The API preserves a valid incoming value. If the header is absent, empty, repeated, longer than 128 characters, or contains control characters, middleware generates a 32-character GUID value. The selected value is returned in `X-Correlation-ID`, and application and request-completion logs emitted inside the middleware scope contain it.
 
-A correlation identifier is diagnostic metadata, not trusted business data. It does not authorize a request and should not be used as a payment or customer identity. A distributed system would normally propagate correlation metadata through downstream HTTP or message headers; this PoC's gateway is in-process, so distributed propagation is not implemented.
+A correlation identifier is diagnostic metadata, not trusted business data. It does not authorize a request and should not be used as a payment or customer identity. It is not distributed tracing and does not establish parent-child spans. A distributed system may propagate correlation metadata through downstream HTTP or message headers; this PoC's gateway is in-process, so distributed propagation is not implemented.
 
 ## Centralized Logging
 
@@ -113,7 +115,7 @@ To investigate the failure:
 
 The payment is created in memory before the gateway call, which gives the trail a `PaymentId`. Persistence occurs only after a successful gateway result, so the failed payment is not stored in PostgreSQL.
 
-The following screenshot was captured from the running local stack using the verified correlation query. It shows the four-event trail and the structured HTTP 500 event.
+The following screenshot was captured from the running local stack using the verified correlation query. It shows the four-event trail, including the structured HTTP 500 event.
 
 ![Grafana Explore filtered by Correlation ID](screenshots/grafana-correlation-id.png)
 
@@ -216,7 +218,7 @@ Centralized logging is a separate decision. Loki and Grafana become useful when 
 
 A tiny local utility may benefit from readable console output without needing centralized logging infrastructure. Not every value deserves a structured property, and not every structured property should become a Loki label.
 
-Logs should not replace metrics for aggregate health or traces for end-to-end distributed timing. They must not contain secrets, credentials, payment details, personal data, or other sensitive values that the logging platform is not authorized to store.
+Logs should not replace metrics for aggregate health or traces for end-to-end distributed timing. They must not contain secrets, credentials, card data, authorization data, or other sensitive values that the logging platform is not authorized to store. Even identifiers and transaction attributes such as `CustomerId` and `Amount` require an explicit data-handling policy in a real system.
 
 ## Production Considerations
 

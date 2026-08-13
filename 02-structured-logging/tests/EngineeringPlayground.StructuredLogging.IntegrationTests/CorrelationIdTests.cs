@@ -49,6 +49,20 @@ public sealed class CorrelationIdTests(PaymentApiFactory factory) : IClassFixtur
     }
 
     [Fact]
+    public async Task RepeatedIncomingCorrelationIdIsReplaced()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/does-not-exist");
+        request.Headers.TryAddWithoutValidation(
+            CorrelationIdMiddleware.HeaderName,
+            ["first-correlation-id", "second-correlation-id"]);
+
+        var response = await factory.CreateClient().SendAsync(request);
+        var correlationId = GetResponseCorrelationId(response);
+
+        Assert.True(Guid.TryParseExact(correlationId, "N", out _));
+    }
+
+    [Fact]
     public async Task CorrelationIdIsIncludedInNestedRequestLogs()
     {
         var sink = new CollectingLogEventSink();
