@@ -26,7 +26,7 @@ Each PoC README answers:
 ## Roadmap
 
 1. [Outbox Pattern](01-outbox-pattern/) — atomically persists business data and integration events, then publishes them asynchronously. **Status: Completed.**
-2. [Structured Logging & Observability](02-structured-logging/) — demonstrates production troubleshooting with structured, contextual, and centralized logs. **Status: Work in Progress.**
+2. [Structured Logging & Observability](02-structured-logging/) — demonstrates production troubleshooting with structured, contextual, correlated, and centralized logs. **Status: Completed.**
 3. Optimistic Concurrency
 4. Distributed Lock
 5. Saga Pattern
@@ -34,4 +34,4 @@ Each PoC README answers:
 
 See [ROADMAP.md](ROADMAP.md) for the planned PoCs. More engineering topics will be added over time.
 
-The complete Outbox Pattern PoC can be started from its directory with `docker compose up --build`. See its README for testing and cleanup commands.
+Each completed PoC can be started from its directory with `docker compose up --build`. See the PoC README for its diagnostic workflow and cleanup commands.

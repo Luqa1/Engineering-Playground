@@ -129,6 +129,8 @@ Do not introduce artificial complexity solely to generate more logs.
 
 ## M7 – Documentation
 
+Status: Completed
+
 Goal:
 
 Turn the completed PoC into a concise engineering knowledge-base example.

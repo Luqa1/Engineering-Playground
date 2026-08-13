@@ -1,155 +1,104 @@
 # Structured Logging & Observability
 
-This Proof of Concept will demonstrate how structured, contextual, and centralized logs improve production troubleshooting.
+## Overview
 
-> **Work in Progress:** Structured application logging, request correlation, centralized log search, and the diagnostic scenario are available. Final documentation will be added in M7.
+This Proof of Concept demonstrates how structured logging, contextual logging, request correlation, and centralized log search support production-style diagnostics in an ASP.NET Core API. A deliberately small payment flow provides enough concurrency and business context to make the diagnostic workflow realistic.
 
-## Problem
+The PoC is about designing useful logs and investigating a failure with Loki and Grafana. It is not a complete observability platform: metrics, distributed tracing, alerting, and OpenTelemetry are outside its scope.
 
-Plain-text log messages are readable but difficult to query reliably when several payments and requests are processed at the same time. Useful diagnostic context needs to remain separate data instead of being embedded only in prose.
+## The Problem
 
-## Why structured logging exists
+Plain-text logs are easy to write but difficult to use when a production service handles many requests concurrently. Messages from unrelated operations become interleaved, arbitrary text searches are fragile, and identifiers or status values may be missing or formatted inconsistently. Reconstructing one failed request then depends on timestamps and guesswork.
 
-Structured logging emits an event with named properties. Serilog writes each event as JSON so tools can later filter by fields such as `PaymentId`, `CustomerId`, `Amount`, `Currency`, `PaymentStatus`, `Gateway`, `Operation`, and `SourceContext`.
+Containerized services add another problem: output is distributed across application instances and container lifetimes. Inspecting each container separately does not scale into a reliable incident-investigation workflow.
 
-Message templates keep those values structured. For example, `Processing payment {PaymentId}` preserves `PaymentId` as a searchable property, while string interpolation turns the identifier into part of an unstructured message.
+## Why Structured Logging Exists
 
-Stable contextual data belongs to a logging scope, while data describing one event belongs in that event's message template. The payment flow attaches `PaymentId`, `CustomerId`, and `Operation` once; every log emitted while that scope is active automatically receives those structured properties. Event-specific values such as `Amount`, `Currency`, or `PaymentStatus` remain on the relevant event.
-
-```csharp
-using var scope = logger.BeginScope(new Dictionary<string, object>
-{
-    ["PaymentId"] = payment.Id,
-    ["CustomerId"] = payment.CustomerId,
-    ["Operation"] = "ProcessPayment"
-});
-
-logger.LogInformation(
-    "Payment processing started with amount {Amount} {Currency}",
-    payment.Amount,
-    payment.Currency);
-```
-
-An unstructured event might contain only:
+Compare a rendered message:
 
 ```text
-Processing payment 9f...
+Payment processing failed for payment 123
 ```
 
-The structured event conceptually contains:
+with an event that retains queryable data:
 
 ```json
 {
-  "PaymentId": "9f...",
+  "PaymentId": "123",
   "CustomerId": "11111111-1111-1111-1111-111111111111",
-  "Amount": 100.00,
-  "Currency": "EUR"
+  "Operation": "ProcessPayment",
+  "CorrelationId": "client-request-42",
+  "PaymentStatus": "Pending"
 }
 ```
 
-## Example scenario
+A message template such as `Payment processing failed for payment {PaymentId}` preserves `PaymentId` as a named property. String interpolation embeds the value only in rendered text. Keeping values as data makes filtering reliable and lets one event carry both a readable message and machine-queryable context.
 
-The API processes a small payment flow through `POST /payments`. It validates the request, creates a pending payment, calls a deterministic simulated payment gateway, marks the payment as completed, and persists it in PostgreSQL.
+## Example Scenario
+
+The API accepts a payment, invokes an in-process simulated gateway, marks a successful payment as completed, and stores it in PostgreSQL. This business flow is intentionally minimal; it exists only to demonstrate logging across a realistic operation and a deterministic failure.
 
 ## Architecture
 
-TODO.
+See the [architecture diagram](diagrams/architecture.mmd) and the [diagnostic sequence diagram](diagrams/sequence.mmd).
 
-## How it works
+- **Client** sends `POST /payments` and receives `X-Correlation-ID` in the response.
+- **API** validates the request, coordinates payment processing, and applies EF Core migrations at startup in non-production environments.
+- **PostgreSQL** stores successfully completed payments.
+- **Serilog** is the logging provider. Application code depends on `ILogger<T>`; it does not call Serilog directly.
+- **Loki** receives the structured Serilog events and provides centralized storage and LogQL search.
+- **Grafana** provides the Explore interface used to query Loki and inspect event fields.
 
-TODO.
+## Logging Model
 
-## Correlation and context
-
-Structured information is attached at the narrowest useful level:
+The PoC separates context by lifetime so each log call contains only event-specific information.
 
 ### Request context
 
-`CorrelationId` identifies every log produced while one HTTP request is processed.
+`CorrelationId` lives for one HTTP request. Middleware creates the request logging scope before the controller runs, so logs produced by the controller, payment processor, gateway, and request-completion middleware inherit the same value.
 
 ### Operation context
 
-`PaymentId`, `CustomerId`, and `Operation` describe the payment-processing operation. They are added once when that operation begins and are inherited by its nested logs.
+`PaymentId`, `CustomerId`, and `Operation` describe one payment-processing operation. `PaymentProcessor` adds them once with an `ILogger` scope, and nested logs inherit them while that scope is active.
 
 ### Event-specific data
 
-`Amount`, `Currency`, and `PaymentStatus` describe an individual event and remain properties of that event.
+Properties such as `Amount`, `Currency`, and `PaymentStatus` describe a particular event. Where a status changes, `PreviousPaymentStatus` and `PaymentStatus` preserve the transition. These values stay in the relevant message template instead of being repeated as stable scope data. This separation keeps logging calls concise while preserving enough context to explain each state change.
 
-Separating these levels avoids repeating stable request and operation properties in every log statement while keeping all values structured and searchable.
+## Correlation ID
 
-Clients may send a correlation identifier in the `X-Correlation-ID` request header. The API preserves a valid value, generates a compact GUID when the header is missing or invalid, returns the identifier in the `X-Correlation-ID` response header, and includes it in every log for that request. Externally supplied values are length-limited because correlation is diagnostic metadata, not trusted business data.
+The correlation header is:
 
-In a distributed system, the correlation identifier would normally be propagated to downstream services through HTTP or message headers. The simulated payment gateway in this PoC runs in-process, so distributed propagation is intentionally not implemented.
-
-## Centralized logging
-
-Container console logs are useful during development, but they become difficult to search once events are spread across requests, containers, and restarts. The API therefore ships the same structured Serilog events directly to Loki, while retaining console output for immediate local inspection. The sink batches delivery asynchronously, so a temporary Loki outage does not make payment processing fail.
-
-Loki stores and queries the logs. Grafana provides the Explore interface used to search them, and Docker Compose provisions Loki as the default Grafana data source automatically. Structured fields such as `CorrelationId`, `PaymentId`, `CustomerId`, `Operation`, and `PaymentStatus` remain in each JSON log line after centralization.
-
-Only the low-cardinality `service_name` and `level` values are Loki labels. Request, payment, and customer identifiers are deliberately not labels because creating a stream for every unique identifier would increase Loki index cardinality. They remain searchable JSON fields instead.
-
-In Grafana Explore, select the provisioned `Loki` data source and use these queries:
-
-All Structured Logging API logs:
-
-```logql
-{service_name="structured-logging-api"}
+```text
+X-Correlation-ID
 ```
 
-All logs for one request:
+The API preserves a valid incoming value. If the header is absent, empty, repeated, longer than 128 characters, or contains control characters, middleware generates a 32-character GUID value. The selected value is returned in `X-Correlation-ID`, and every log generated during that request contains it.
 
-```logql
-{service_name="structured-logging-api"}
-| json
-| CorrelationId="<value>"
-```
+A correlation identifier is diagnostic metadata, not trusted business data. It does not authorize a request and should not be used as a payment or customer identity. A distributed system would normally propagate correlation metadata through downstream HTTP or message headers; this PoC's gateway is in-process, so distributed propagation is not implemented.
 
-All logs for one payment:
+## Centralized Logging
 
-```logql
-{service_name="structured-logging-api"}
-| json
-| PaymentId="<value>"
-```
+Serilog writes structured JSON events to the console and sends them to Loki. Grafana queries Loki, so a developer can search the combined event stream instead of inspecting individual container output.
 
-Error-level logs:
+Loki labels and structured fields serve different purposes:
 
-```logql
-{service_name="structured-logging-api"}
-| json
-| _l="Error"
-```
+- A label identifies a log stream and is indexed. The configured `service_name="structured-logging-api"` value is stable and low-cardinality, so it is a suitable label. The sink also handles the small log-level set as a label.
+- A structured field remains in the JSON event and is parsed at query time. `CorrelationId`, `PaymentId`, and `CustomerId` are high-cardinality values and deliberately are **not** Loki labels.
 
-`RenderedCompactJsonFormatter` writes a non-information log level in the JSON field `@l`. Loki's automatic JSON parser normalizes that field to the queryable name `_l`, which is why the error query filters on `_l="Error"`. These request, payment, and error queries were verified against the Loki configuration used by this stack.
+Turning every unique request or business identifier into a label would create too many streams and increase index and query costs. These identifiers remain searchable after `| json` without increasing label cardinality.
 
-## Diagnostic scenario
+## Diagnostic Scenario
 
-The simulated payment gateway fails deterministically when `Amount` is exactly `13.37`. Every other valid amount follows the unchanged successful flow. The failure is a controlled `PaymentGatewayException` with a concrete simulated-gateway reason, and the payment processor records that exception once while its structured operation scope is still active.
+The simulated gateway fails deterministically when `Amount` is exactly `13.37`. Other valid amounts use the successful flow.
 
-To reproduce and diagnose the failure:
+To investigate the failure:
 
-1. Start the complete stack:
-
-   ```bash
-   docker compose up --build
-   ```
-
-2. Send a payment request with the diagnostic amount:
-
-   ```bash
-   curl -i -X POST http://localhost:8080/payments \
-     -H "Content-Type: application/json" \
-     -d '{"customerId":"11111111-1111-1111-1111-111111111111","amount":13.37,"currency":"EUR"}'
-   ```
-
-   The API returns `500 Internal Server Error` with a generic problem-details body. Internal exception details are not returned to the caller. The response still contains `X-Correlation-ID` so the caller can report a diagnostic identifier.
-
+1. Send the failing request shown in [Failure Scenario](#failure-scenario).
+2. Receive `500 Internal Server Error` with a generic problem-details response.
 3. Copy the `X-Correlation-ID` response-header value.
-
-4. Open [Grafana Explore](http://localhost:3000/explore) and select the provisioned `Loki` data source.
-
-5. Find every event for the failed request:
+4. Open [Grafana Explore](http://localhost:3000/explore) and select the provisioned **Loki** data source.
+5. Search for the request:
 
    ```logql
    {service_name="structured-logging-api"}
@@ -157,53 +106,53 @@ To reproduce and diagnose the failure:
    | CorrelationId="<correlation-id>"
    ```
 
-6. Read `PaymentId`, `CustomerId`, and `Operation` from the payment events. The trail shows payment processing starting, the `SimulatedPaymentGateway` invocation starting, the gateway failure, and the HTTP request completing with status `500`.
+6. Inspect the operation context: `CustomerId`, `Operation`, amount, currency, and pending status are available as structured fields.
+7. Copy the `PaymentId` from the payment events and, if needed, run the payment query below.
+8. Inspect the gateway invocation and the payment-processor error event.
+9. Read the recorded exception: the `SimulatedPaymentGateway` rejected the diagnostic amount `13.37`.
 
-7. Inspect the payment-processor error event. Its exception identifies the simulated gateway failure and the diagnostic amount. The same event retains `CorrelationId`, `PaymentId`, `CustomerId`, `Operation`, `Amount`, `Currency`, and `PaymentStatus` as structured properties.
+The payment is created in memory before the gateway call, which gives the trail a `PaymentId`. Persistence occurs only after a successful gateway result, so the failed payment is not stored in PostgreSQL.
 
-8. Optionally narrow the search to the affected payment:
+The following screenshot was captured from the running local stack using the verified correlation query. It shows the four-event trail and the structured HTTP 500 event.
 
-   ```logql
-   {service_name="structured-logging-api"}
-   | json
-   | PaymentId="<payment-id>"
-   ```
+![Grafana Explore filtered by Correlation ID](screenshots/grafana-correlation-id.png)
 
-9. To inspect error-level events across requests, use the formatter-aware level query:
+## Running the Example
 
-   ```logql
-   {service_name="structured-logging-api"}
-   | json
-   | _l="Error"
-   ```
-
-The payment object is created in memory before the gateway call, which gives the diagnostic trail a `PaymentId`. The existing flow persists only after a successful gateway result, so the failed payment is not stored in PostgreSQL. No transaction or persistence redesign is introduced for this scenario.
-
-With only plain-text, uncorrelated logs, an engineer would need to align timestamps and infer which interleaved gateway and HTTP messages belong together. Here, `CorrelationId` reconstructs the request, `PaymentId` narrows the affected operation, and the exception plus structured fields establish the customer, failure location, payment state, and concrete reason without relying on message-text searches.
-
-## Trade-offs
-
-TODO.
-
-## When to use
-
-TODO.
-
-## When not to use
-
-TODO.
-
-## Running the example
-
-Start the API, PostgreSQL, Loki, and Grafana from this directory:
+From `02-structured-logging`, start the complete environment:
 
 ```bash
 docker compose up --build
 ```
 
-Docker Compose waits for PostgreSQL to become healthy before starting the API. In non-production environments, the API applies pending EF Core migrations automatically. Production environments require migrations to be applied through a controlled deployment process. Loki stores logs in a local Docker volume, and Grafana starts with Loki already provisioned as its default data source.
+Docker Compose starts these services:
 
-Create a payment:
+| Service | Local access | Purpose |
+| --- | --- | --- |
+| `postgres` | Internal port `5432` | Payment persistence |
+| `api` | <http://localhost:8080> | Payment API |
+| `loki` | <http://localhost:3100> | Central log storage and query API |
+| `grafana` | <http://localhost:3000> | Log exploration UI |
+
+Grafana starts with Loki provisioned as its default data source. Unless overridden through environment variables, the local credentials are `admin` / `admin`; Grafana may ask you to skip or change the default password after the first sign-in.
+
+The API waits for PostgreSQL to become healthy and applies pending EF Core migrations automatically because Docker Compose runs it in `Development`. Production environments must apply migrations through a controlled deployment process.
+
+Stop the environment while retaining local volumes:
+
+```bash
+docker compose down
+```
+
+Reset the database, logs, and Grafana state:
+
+```bash
+docker compose down -v
+```
+
+## Successful Scenario
+
+Send a valid payment:
 
 ```bash
 curl -i -X POST http://localhost:8080/payments \
@@ -211,14 +160,74 @@ curl -i -X POST http://localhost:8080/payments \
   -d '{"customerId":"11111111-1111-1111-1111-111111111111","amount":100.00,"currency":"EUR"}'
 ```
 
-The response contains the payment identifier, customer identifier, amount, currency, `Completed` status, creation timestamp, and an `X-Correlation-ID` header.
+The API returns `201 Created`, a completed payment response, and `X-Correlation-ID`. Searching for that correlation identifier shows the payment start, gateway result, status transition from `Pending` to `Completed`, persistence, completion, and HTTP request result with shared context.
 
-Copy the correlation identifier, open [Grafana](http://localhost:3000), and sign in with the local credentials from `.env` or the defaults `admin` / `admin`. Open **Explore**, select the provisioned **Loki** data source, and run the correlation query from the centralized logging section with the copied value.
+## Failure Scenario
 
-Inspect the API's JSON logs locally:
+Send the deterministic failure amount:
 
 ```bash
-docker compose logs -f api
+curl -i -X POST http://localhost:8080/payments \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"11111111-1111-1111-1111-111111111111","amount":13.37,"currency":"EUR"}'
 ```
 
-Each HTTP request produces one concise completion event with the request method, path, response status code, and elapsed time. Payment processing events include only useful operational context and do not log request bodies or sensitive configuration.
+The API returns `500 Internal Server Error` with a generic problem-details body and an `X-Correlation-ID` response header. Copy that header value, open Grafana Explore, and run the correlation query from the diagnostic scenario. Internal exception details stay out of the HTTP response but remain available in the structured error event.
+
+## Useful LogQL Queries
+
+All Structured Logging API logs:
+
+```logql
+{service_name="structured-logging-api"}
+```
+
+One request:
+
+```logql
+{service_name="structured-logging-api"}
+| json
+| CorrelationId="<correlation-id>"
+```
+
+One payment:
+
+```logql
+{service_name="structured-logging-api"}
+| json
+| PaymentId="<payment-id>"
+```
+
+These queries were verified against the current Serilog JSON format and Loki configuration.
+
+## Trade-offs
+
+Structured, centralized logs provide machine-queryable context, consistent diagnostic metadata, correlation across an operation, and faster incident investigation. They also require logging infrastructure, storage, ingestion capacity, and disciplined event design.
+
+Poor choices are costly: high-cardinality labels can harm log-system performance, while excessive events create noise and increase storage and ingestion cost. Useful logging therefore depends on selecting stable context, meaningful events, and appropriate log levels rather than recording everything.
+
+## When to Use
+
+Structured logging is especially useful for production APIs, distributed systems, background processors, highly concurrent workloads, and systems that require operational troubleshooting. It remains valuable even when events are written only to a structured console sink.
+
+Centralized logging is a separate decision. Loki and Grafana become useful when events span instances, containers, or services and need one searchable location; they are not required merely to adopt structured logging.
+
+## When NOT to Use / Avoid Overengineering
+
+A tiny local utility may benefit from readable console output without needing centralized logging infrastructure. Not every value deserves a structured property, and not every structured property should become a Loki label.
+
+Logs should not replace metrics for aggregate health or traces for end-to-end distributed timing. They must not contain secrets, credentials, payment details, personal data, or other sensitive values that the logging platform is not authorized to store.
+
+## Production Considerations
+
+A production deployment would need explicit log-retention and sensitive-data policies, authentication and authorization for Grafana and Loki, durable production storage, high availability, alerting, and capacity planning. Sampling may be appropriate for high-volume events.
+
+Metrics, OpenTelemetry, and distributed tracing would complement these logs in a broader observability design. They are production extensions, not implemented features of this PoC.
+
+## Key Takeaways
+
+- Logs become substantially more useful when context is preserved as queryable data.
+- Stable request and operation context belongs in logging scopes.
+- A correlation identifier makes one request reconstructable across interleaved events.
+- High-cardinality business identifiers should remain structured fields unless there is a deliberate reason to index them as labels.
+- Centralized search is only as useful as the structure and consistency of the application events sent to it.

@@ -1,0 +1,31 @@
+sequenceDiagram
+    actor Client
+    participant API
+    participant Processor as PaymentProcessor
+    participant Gateway as SimulatedPaymentGateway
+    participant Loki
+    participant Grafana
+    actor Engineer
+
+    Client->>API: POST /payments (Amount 13.37)
+    API->>API: Preserve or generate CorrelationId
+    Note over API: Request scope: CorrelationId
+    API->>Processor: Process payment
+    activate Processor
+    Note over Processor: Operation scope: PaymentId, CustomerId, Operation
+    Processor-->>Loki: Structured payment-start event
+    Processor->>Gateway: Invoke gateway
+    activate Gateway
+    Gateway-->>Loki: Structured invocation-start event
+    Gateway--xProcessor: PaymentGatewayException
+    deactivate Gateway
+    Processor-->>Loki: Structured error with operation context
+    Processor--xAPI: PaymentGatewayException
+    deactivate Processor
+    API-->>Loki: Structured HTTP 500 completion event
+    API-->>Client: 500 + X-Correlation-ID
+    Client-->>Engineer: Report X-Correlation-ID
+    Engineer->>Grafana: Search by CorrelationId
+    Grafana->>Loki: LogQL query
+    Loki-->>Grafana: Correlated diagnostic trail
+    Grafana-->>Engineer: PaymentId, context, and failure reason

@@ -1,0 +1,14 @@
+flowchart LR
+    Client[Client]
+    API[ASP.NET Core API]
+    PostgreSQL[(PostgreSQL)]
+    Serilog[Serilog]
+    Loki[(Loki)]
+    Grafana[Grafana]
+
+    Client -->|"POST /payments<br/>X-Correlation-ID"| API
+    API -->|"X-Correlation-ID response"| Client
+    API -->|"Completed payments"| PostgreSQL
+    API -->|"ILogger&lt;T&gt; events"| Serilog
+    Serilog -->|"Structured JSON logs"| Loki
+    Loki -->|"LogQL results"| Grafana

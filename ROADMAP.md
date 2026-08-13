@@ -5,7 +5,7 @@ The roadmap tracks planned, independent Proofs of Concept. Each PoC will focus o
 ## Initial Roadmap
 
 1. Outbox Pattern
-2. [Structured Logging & Observability](02-structured-logging/) — **Status: Work in Progress.**
+2. [Structured Logging & Observability](02-structured-logging/) — **Status: Completed.**
 3. Optimistic Concurrency
 4. Distributed Lock
 5. Saga Pattern
