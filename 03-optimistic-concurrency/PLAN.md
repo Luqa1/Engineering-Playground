@@ -44,6 +44,8 @@ Prepare the PoC structure and implementation plan.
 
 ## M2 – Running Application
 
+**Status: Completed**
+
 ### Goal
 
 Create the smallest working .NET 10 application needed for the concurrency scenario.
