@@ -67,6 +67,8 @@ Avoid generic CRUD functionality.
 
 ## M3 – Lost Update Scenario
 
+**Status: Completed**
+
 ### Goal
 
 Demonstrate the problem before implementing the solution.

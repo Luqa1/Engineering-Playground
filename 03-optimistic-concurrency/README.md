@@ -20,6 +20,25 @@ The application starts with this deterministic item:
 
 The current API performs ordinary EF Core updates. If Client A writes quantity `90` and Client B later writes quantity `80`, the final quantity is `80` and no conflict is reported. This behavior is intentional for the current milestone.
 
+## Lost Update Scenario
+
+A lost update occurs when two clients read the same state, make independent changes, and the later write silently replaces the earlier write. A successful HTTP response and a successful database write only confirm that an operation completed; without concurrency protection, they do not prove that the operation was based on the latest state.
+
+```text
+Client A                Client B
+
+GET Quantity = 100      GET Quantity = 100
+
+PUT 90
+                        PUT 80
+
+Database:
+
+Quantity = 80
+```
+
+Both clients operate on the stale quantity `100`, and both operations succeed. No conflict is detected, so Client B's second write changes the database to `80` and silently overwrites Client A's update to `90`. The final value does not preserve Client A's update. M4 will solve this problem; this milestone intentionally documents the unsafe behavior without introducing the solution.
+
 ## Running the Example
 
 Start the API and PostgreSQL from this directory:
@@ -60,4 +79,4 @@ Both endpoints return `404 Not Found` when the item does not exist. A negative q
 
 ## Current Limitation
 
-Concurrency protection is intentionally not implemented yet. Requests and responses have no version field, EF Core uses normal tracked updates, and the API does not detect lost updates. This unsafe behavior provides the baseline for M3.
+Concurrency protection is intentionally not implemented yet. Requests and responses have no version field, EF Core uses normal tracked updates, and the API does not detect lost updates. This unsafe behavior is demonstrated by the deterministic M3 integration test and provides the baseline for M4.
