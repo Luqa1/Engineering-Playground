@@ -1,9 +1,12 @@
 flowchart LR
-    clientA[Client A]
-    clientB[Client B]
-    api[ASP.NET Core API]
+    clients[Clients]
+    api[API<br/>Controllers and InventoryService]
+    infrastructure[Infrastructure<br/>EF Core and migrations]
+    domain[Domain<br/>InventoryItem]
     database[(PostgreSQL)]
 
-    clientA -->|GET / PUT| api
-    clientB -->|GET / PUT| api
-    api -->|EF Core| database
+    clients -->|GET / PUT| api
+    api --> infrastructure
+    api --> domain
+    infrastructure --> domain
+    infrastructure -->|EF Core| database

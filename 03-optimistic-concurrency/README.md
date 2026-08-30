@@ -7,15 +7,15 @@ This Proof of Concept shows why technically successful updates can still produce
 The learning path is:
 
 ```text
-Normal update
+Normal read-modify-write
       ↓
 Lost update
       ↓
-Why successful writes can still be incorrect
+Silent overwrite
       ↓
 Version-based optimistic concurrency
       ↓
-Conflict detection
+Atomic conflict detection
       ↓
 409 Conflict
       ↓
@@ -105,17 +105,20 @@ Version   = 1
 
 ```mermaid
 flowchart LR
-    clientA[Client A]
-    clientB[Client B]
-    api[ASP.NET Core API]
+    clients[Clients]
+    api[API<br/>Controllers and InventoryService]
+    infrastructure[Infrastructure<br/>EF Core and migrations]
+    domain[Domain<br/>InventoryItem]
     database[(PostgreSQL)]
 
-    clientA -->|GET / PUT| api
-    clientB -->|GET / PUT| api
-    api -->|EF Core| database
+    clients -->|GET / PUT| api
+    api --> infrastructure
+    api --> domain
+    infrastructure --> domain
+    infrastructure -->|EF Core| database
 ```
 
-The API exposes only the read and quantity-update operations needed for the scenario. Its controller delegates persistence behavior to the inventory service, and EF Core accesses PostgreSQL through the infrastructure project. The standalone Mermaid source is in [`diagrams/architecture.mmd`](diagrams/architecture.mmd).
+The API exposes only the read and quantity-update operations needed for the scenario. Its controller delegates persistence behavior to the inventory service. The API depends on Infrastructure and Domain, Infrastructure depends on Domain, and EF Core accesses PostgreSQL through Infrastructure. The standalone Mermaid source is in [`diagrams/architecture.mmd`](diagrams/architecture.mmd).
 
 ## How It Works
 

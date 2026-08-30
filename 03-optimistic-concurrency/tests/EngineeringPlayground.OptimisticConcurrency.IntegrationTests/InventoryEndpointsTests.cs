@@ -30,6 +30,8 @@ public sealed class InventoryEndpointsTests :
 
     public Task DisposeAsync()
     {
+        client.Dispose();
+
         return Task.CompletedTask;
     }
 

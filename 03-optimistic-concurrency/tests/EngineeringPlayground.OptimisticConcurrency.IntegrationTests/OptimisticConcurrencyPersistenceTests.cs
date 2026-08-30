@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace EngineeringPlayground.OptimisticConcurrency.IntegrationTests;
 
-public sealed class LostUpdateTests(OptimisticConcurrencyApiFactory factory) :
+public sealed class OptimisticConcurrencyPersistenceTests(OptimisticConcurrencyApiFactory factory) :
     IClassFixture<OptimisticConcurrencyApiFactory>
 {
     private static readonly Guid DemoItemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
