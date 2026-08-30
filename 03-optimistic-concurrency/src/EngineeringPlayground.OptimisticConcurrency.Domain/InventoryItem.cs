@@ -7,4 +7,6 @@ public sealed class InventoryItem
     public string Name { get; set; } = string.Empty;
 
     public int Quantity { get; set; }
+
+    public long Version { get; private set; } = 1;
 }

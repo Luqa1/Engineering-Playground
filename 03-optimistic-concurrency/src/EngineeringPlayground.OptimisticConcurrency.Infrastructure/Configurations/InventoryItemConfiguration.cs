@@ -28,5 +28,11 @@ public sealed class InventoryItemConfiguration : IEntityTypeConfiguration<Invent
         builder.Property(item => item.Quantity)
             .HasColumnName("quantity")
             .IsRequired();
+
+        builder.Property(item => item.Version)
+            .HasColumnName("version")
+            .HasDefaultValue(1L)
+            .IsConcurrencyToken()
+            .IsRequired();
     }
 }

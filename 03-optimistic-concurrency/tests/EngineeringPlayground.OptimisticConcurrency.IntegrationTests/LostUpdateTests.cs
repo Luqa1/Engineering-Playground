@@ -10,7 +10,7 @@ public sealed class LostUpdateTests(OptimisticConcurrencyApiFactory factory) :
     private static readonly Guid DemoItemId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
-    public async Task Second_client_silently_overwrites_first_clients_update()
+    public async Task Second_client_cannot_overwrite_first_clients_update_with_a_stale_version()
     {
         await using var clientAScope = factory.Services.CreateAsyncScope();
         await using var clientBScope = factory.Services.CreateAsyncScope();
@@ -23,22 +23,17 @@ public sealed class LostUpdateTests(OptimisticConcurrencyApiFactory factory) :
 
         Assert.Equal(100, clientAItem.Quantity);
         Assert.Equal(100, clientBItem.Quantity);
+        Assert.Equal(clientAItem.Version, clientBItem.Version);
+
+        var originalVersion = clientAItem.Version;
 
         clientAItem.Quantity = 90;
         clientBItem.Quantity = 80;
 
-        var clientASaveException = await Record.ExceptionAsync(async () =>
-        {
-            await clientAContext.SaveChangesAsync();
-        });
+        await clientAContext.SaveChangesAsync();
 
-        var clientBSaveException = await Record.ExceptionAsync(async () =>
-        {
-            await clientBContext.SaveChangesAsync();
-        });
-
-        Assert.Null(clientASaveException);
-        Assert.Null(clientBSaveException);
+        await Assert.ThrowsAsync<DbUpdateConcurrencyException>(
+            () => clientBContext.SaveChangesAsync());
 
         await using var verificationScope = factory.Services.CreateAsyncScope();
         var verificationContext = verificationScope.ServiceProvider.GetRequiredService<InventoryDbContext>();
@@ -46,6 +41,8 @@ public sealed class LostUpdateTests(OptimisticConcurrencyApiFactory factory) :
             .AsNoTracking()
             .SingleAsync(item => item.Id == DemoItemId);
 
-        Assert.Equal(80, persistedItem.Quantity);
+        Assert.Equal(90, persistedItem.Quantity);
+        Assert.NotEqual(80, persistedItem.Quantity);
+        Assert.Equal(originalVersion + 1, persistedItem.Version);
     }
 }

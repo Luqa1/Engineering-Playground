@@ -13,9 +13,10 @@ public sealed class InventoryService(InventoryDbContext dbContext)
             .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
     }
 
-    public async Task<InventoryItem?> UpdateQuantityAsync(
+    public async Task<InventoryItemUpdateResult> UpdateQuantityAsync(
         Guid id,
         int quantity,
+        long expectedVersion,
         CancellationToken cancellationToken)
     {
         var item = await dbContext.InventoryItems
@@ -23,12 +24,31 @@ public sealed class InventoryService(InventoryDbContext dbContext)
 
         if (item is null)
         {
-            return null;
+            return new InventoryItemUpdateResult(Item: null, HasConflict: false);
         }
 
         item.Quantity = quantity;
-        await dbContext.SaveChangesAsync(cancellationToken);
+        var entry = dbContext.Entry(item);
+        entry.Property(inventoryItem => inventoryItem.Quantity).IsModified = true;
+        entry.Property(inventoryItem => inventoryItem.Version).OriginalValue = expectedVersion;
 
-        return item;
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            return new InventoryItemUpdateResult(item, HasConflict: false);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            dbContext.ChangeTracker.Clear();
+
+            var currentItem = await GetAsync(id, cancellationToken);
+
+            return new InventoryItemUpdateResult(
+                currentItem,
+                HasConflict: currentItem is not null);
+        }
     }
 }
+
+public sealed record InventoryItemUpdateResult(InventoryItem? Item, bool HasConflict);

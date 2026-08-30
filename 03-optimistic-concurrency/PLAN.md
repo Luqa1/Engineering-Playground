@@ -94,6 +94,8 @@ Do not implement the solution during this milestone.
 
 ## M4 – Optimistic Concurrency
 
+**Status: Completed**
+
 ### Goal
 
 Prevent silent lost updates using optimistic concurrency.
@@ -121,6 +123,8 @@ When another client has already modified the record, the second update must be d
 Do not introduce pessimistic locking.
 
 ## M5 – Conflict API Behavior
+
+**Status: Completed**
 
 ### Goal
 

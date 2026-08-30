@@ -27,18 +27,28 @@ public sealed class InventoryController(InventoryService inventoryService) : Con
         UpdateInventoryItemRequest request,
         CancellationToken cancellationToken)
     {
-        var item = await inventoryService.UpdateQuantityAsync(
+        var updateResult = await inventoryService.UpdateQuantityAsync(
             id,
             request.Quantity,
+            request.Version,
             cancellationToken);
 
-        return item is null
-            ? NotFound()
-            : Ok(ToResponse(item));
+        if (updateResult.Item is null)
+        {
+            return NotFound();
+        }
+
+        var response = ToResponse(updateResult.Item);
+
+        return updateResult.HasConflict
+            ? Conflict(new InventoryItemConflictResponse(
+                "The inventory item was modified by another client.",
+                response))
+            : Ok(response);
     }
 
     private static InventoryItemResponse ToResponse(InventoryItem item)
     {
-        return new InventoryItemResponse(item.Id, item.Name, item.Quantity);
+        return new InventoryItemResponse(item.Id, item.Name, item.Quantity, item.Version);
     }
 }
