@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant A as Client A
+    participant B as Client B
+    participant API
+    participant DB as PostgreSQL
+
+    A->>API: GET inventory item
+    API->>DB: Read item
+    DB-->>API: Quantity 100, Version 1
+    API-->>A: 200 OK, Quantity 100, Version 1
+
+    B->>API: GET inventory item
+    API->>DB: Read item
+    DB-->>API: Quantity 100, Version 1
+    API-->>B: 200 OK, Quantity 100, Version 1
+
+    A->>API: PUT Quantity 90, Version 1
+    API->>DB: Update where Version = 1
+    DB-->>API: One row updated, Version 2
+    API-->>A: 200 OK, Quantity 90, Version 2
+
+    B->>API: PUT Quantity 80, Version 1
+    API->>DB: Update where Version = 1
+    DB-->>API: Zero matching rows
+    API->>DB: Read current item
+    DB-->>API: Quantity 90, Version 2
+    API-->>B: 409 Conflict with current state
+
+    Note over B: Client makes an explicit decision
+    opt Deliberate new operation
+        B->>API: PUT using current Version 2
+        API->>DB: Update where Version = 2
+        DB-->>API: One row updated, Version 3
+        API-->>B: 200 OK, Version 3
+    end

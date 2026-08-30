@@ -1,0 +1,9 @@
+flowchart LR
+    clientA[Client A]
+    clientB[Client B]
+    api[ASP.NET Core API]
+    database[(PostgreSQL)]
+
+    clientA -->|GET / PUT| api
+    clientB -->|GET / PUT| api
+    api -->|EF Core| database

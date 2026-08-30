@@ -31,6 +31,8 @@ Do not build a complete inventory system. The scenario exists only to make concu
 
 ## M1 – Repository Skeleton
 
+**Status: Completed**
+
 ### Goal
 
 Prepare the PoC structure and implementation plan.
@@ -195,6 +197,8 @@ The business/client layer decides how to resolve it.
 Do not implement automatic merging.
 
 ## M7 – Documentation
+
+**Status: Completed**
 
 ### Goal
 
