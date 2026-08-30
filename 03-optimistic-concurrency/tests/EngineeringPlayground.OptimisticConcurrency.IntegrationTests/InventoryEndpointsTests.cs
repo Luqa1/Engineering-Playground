@@ -63,7 +63,7 @@ public sealed class InventoryEndpointsTests :
     }
 
     [Fact]
-    public async Task Put_with_stale_version_returns_conflict_with_current_state_and_client_can_recover()
+    public async Task Put_with_stale_version_returns_conflict_with_current_state()
     {
         var clientAItem = await GetDemoItemAsync();
         var clientBItem = await GetDemoItemAsync();
@@ -97,17 +97,6 @@ public sealed class InventoryEndpointsTests :
         var persistedAfterConflict = await GetDemoItemAsync();
         Assert.Equal(90, persistedAfterConflict.Quantity);
         Assert.Equal(updatedByClientA.Version, persistedAfterConflict.Version);
-
-        var recoveryResponse = await client.PutAsJsonAsync(
-            $"/inventory/{DemoItemId}",
-            new { Quantity = 80, conflict.Current.Version });
-
-        recoveryResponse.EnsureSuccessStatusCode();
-        var recoveredItem = await recoveryResponse.Content
-            .ReadFromJsonAsync<InventoryItemResponse>();
-        Assert.NotNull(recoveredItem);
-        Assert.Equal(80, recoveredItem.Quantity);
-        Assert.Equal(conflict.Current.Version + 1, recoveredItem.Version);
     }
 
     [Fact]

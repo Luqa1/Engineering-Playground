@@ -170,3 +170,91 @@ Content-Type: application/json
 ## Conflict Resolution Scope
 
 The PoC detects and reports conflicts only. It intentionally leaves the resolution decision to the client and does not implement automatic retries, merging, or overwriting of newer data.
+
+## Concurrent Clients Scenario
+
+Two clients are concurrent when they operate on overlapping logical state. Their requests do not need to run during the same CPU instant: it is enough that both clients read the same version before either submits an update.
+
+```text
+Client A                  API / Database                  Client B
+   |                            |                            |
+   | GET                        |                            |
+   |--------------------------->|                            |
+   | Quantity=100, Version=1    |                            |
+   |<---------------------------|                            |
+   |                            |<---------------------------| GET
+   |                            |--------------------------->|
+   |                            | Quantity=100, Version=1    |
+   |                            |                            |
+   | PUT 90, Version=1          |                            |
+   |--------------------------->|                            |
+   |                            | update succeeds            |
+   |                            | Version -> 2               |
+   | Quantity=90, Version=2     |                            |
+   |<---------------------------|                            |
+   |                            |                            |
+   |                            |<---------------------------| PUT 80, Version=1
+   |                            | stale version              |
+   |                            |--------------------------->|
+   |                            | 409, current state = 90/2  |
+   |                            |                            |
+   |                            |<---------------------------| PUT 80, Version=2
+   |                            | explicit new decision      |
+   |                            |--------------------------->|
+   |                            | success, Version -> 3      |
+```
+
+Here, **stale** means Client B's representation was valid when read but became outdated when Client A committed its change. A **conflict** means the database found that Client B's expected version no longer matched the current version, so it rejected the write atomically. **Resolution** starts only after that detection: the client or business workflow can discard the change, reload, merge, ask a user, or submit a deliberate new operation. No one strategy is correct for every domain, and the API never retries the stale operation automatically.
+
+### Manual walkthrough
+
+Start from a clean database so the values below begin at `Quantity = 100, Version = 1`:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+In another terminal, read the item once as Client A:
+
+```bash
+curl -i http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111
+```
+
+Read it independently as Client B before making any update:
+
+```bash
+curl -i http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111
+```
+
+Both responses contain quantity `100` and version `1`. Client A now updates using the version it read:
+
+```bash
+curl -i -X PUT http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111 \
+  -H "Content-Type: application/json" \
+  -d '{"quantity":90,"version":1}'
+```
+
+The response is `200 OK` with quantity `90` and version `2`. Client B still holds version `1`, so its update is stale:
+
+```bash
+curl -i -X PUT http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111 \
+  -H "Content-Type: application/json" \
+  -d '{"quantity":80,"version":1}'
+```
+
+The response is `409 Conflict`, and its `current` property contains quantity `90` and version `2`. Confirm that Client A's value remains stored:
+
+```bash
+curl -i http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111
+```
+
+After considering the conflict, Client B can make a deliberate new request using the current version:
+
+```bash
+curl -i -X PUT http://localhost:8083/inventory/11111111-1111-1111-1111-111111111111 \
+  -H "Content-Type: application/json" \
+  -d '{"quantity":80,"version":2}'
+```
+
+This final request succeeds with quantity `80` and version `3`. It is a new client decision based on fresh state, not an automatic retry of the stale request. If the database volume was not reset, use the versions returned by the two initial `GET` requests instead of assuming version `1`.

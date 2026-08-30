@@ -155,6 +155,8 @@ Do not automatically retry a stale business operation.
 
 ## M6 – Concurrent Requests Scenario
 
+**Status: Completed**
+
 ### Goal
 
 Demonstrate the complete behavior using two competing clients.
