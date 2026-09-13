@@ -23,6 +23,7 @@ services:
     environment:
       DOTNET_ENVIRONMENT: Development
       WORKER_INSTANCE: worker-a
+      JOB_EXECUTION_KEY: "2026-09-13"
       APPLY_MIGRATIONS: "true"
       ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=${POSTGRES_DB:-distributed_lock};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
     depends_on:
@@ -37,6 +38,7 @@ services:
     environment:
       DOTNET_ENVIRONMENT: Development
       WORKER_INSTANCE: worker-b
+      JOB_EXECUTION_KEY: "2026-09-13"
       APPLY_MIGRATIONS: "false"
       ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=${POSTGRES_DB:-distributed_lock};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
     depends_on:

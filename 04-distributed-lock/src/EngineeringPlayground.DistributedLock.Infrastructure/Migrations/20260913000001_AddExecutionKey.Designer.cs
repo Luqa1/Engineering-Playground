@@ -1,15 +1,18 @@
 using System;
+using EngineeringPlayground.DistributedLock.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace EngineeringPlayground.DistributedLock.Infrastructure.Migrations;
 
 [DbContext(typeof(DistributedLockDbContext))]
-partial class DistributedLockDbContextModelSnapshot : ModelSnapshot
+[Migration("20260913000001_AddExecutionKey")]
+partial class AddExecutionKey
 {
-    protected override void BuildModel(ModelBuilder modelBuilder)
+    protected override void BuildTargetModel(ModelBuilder modelBuilder)
     {
 #pragma warning disable 612, 618
         modelBuilder

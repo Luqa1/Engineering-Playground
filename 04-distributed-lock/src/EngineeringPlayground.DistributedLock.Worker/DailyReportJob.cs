@@ -9,12 +9,13 @@ public sealed class DailyReportJob(
     TimeProvider timeProvider,
     ILogger<DailyReportJob> logger)
 {
-    public const string JobName = "DailyReportJob";
+    public const string JobName = "daily-report";
 
     public async Task<Guid> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         var execution = new JobExecution(
             JobName,
+            workerOptions.JobExecutionKey,
             workerOptions.Instance,
             timeProvider.GetUtcNow());
 
@@ -22,8 +23,9 @@ public sealed class DailyReportJob(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
-            "Job execution started: {JobName} {WorkerInstance} {JobExecutionId}",
+            "Job execution started: {JobName} {ExecutionKey} {WorkerInstance} {JobExecutionId}",
             execution.JobName,
+            execution.ExecutionKey,
             execution.WorkerInstance,
             execution.Id);
 
@@ -31,8 +33,9 @@ public sealed class DailyReportJob(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(
-            "Job execution completed: {JobName} {WorkerInstance} {JobExecutionId}",
+            "Job execution completed: {JobName} {ExecutionKey} {WorkerInstance} {JobExecutionId}",
             execution.JobName,
+            execution.ExecutionKey,
             execution.WorkerInstance,
             execution.Id);
 

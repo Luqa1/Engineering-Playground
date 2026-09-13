@@ -12,9 +12,15 @@ if (string.IsNullOrWhiteSpace(workerInstance))
     throw new InvalidOperationException("WORKER_INSTANCE is required.");
 }
 
+var jobExecutionKey = builder.Configuration["JOB_EXECUTION_KEY"];
+if (string.IsNullOrWhiteSpace(jobExecutionKey))
+{
+    throw new InvalidOperationException("JOB_EXECUTION_KEY is required.");
+}
+
 builder.Services.AddDistributedLockInfrastructure(connectionString);
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton(new WorkerOptions(workerInstance));
+builder.Services.AddSingleton(new WorkerOptions(workerInstance, jobExecutionKey));
 builder.Services.AddScoped<DailyReportJob>();
 builder.Services.AddHostedService<OneShotWorker>();
 

@@ -12,25 +12,88 @@ Two independent Worker processes can decide to run the same logical job. Without
 
 ## Duplicate Execution
 
-TODO.
+Both Workers receive the same logical job identity:
+
+```text
+JobName       ExecutionKey
+daily-report  2026-09-13
+```
+
+`JobName` identifies the kind of operation. `ExecutionKey` identifies the one
+execution window that should be performed. `WorkerInstance` identifies the
+application instance that attempted it; it is not part of the logical job
+identity.
+
+Without shared coordination, the scenario is:
+
+```text
+Worker A                       Worker B
+   |                              |
+   | daily-report / 2026-09-13    | daily-report / 2026-09-13
+   |                              |
+   | execute                      | execute
+   |                              |
+   +---------- PostgreSQL --------+
+              two records
+```
+
+Worker A has only its own process state, and Worker B has separate process
+state. Neither instance knows that the other instance has decided to perform
+the same logical operation. PostgreSQL intentionally has no unique constraint
+on `(JobName, ExecutionKey)`, so both executions are valid from the database's
+perspective and both are persisted.
+
+The problem is not merely that two inserts occurred. The inserts are durable
+evidence that two independent application instances both believed they were
+allowed to perform one logical business operation.
+
+The integration test reproduces this deterministically. It creates two
+`DailyReportJob` objects backed by separate `DbContext` instances and uses a
+test-only rendezvous before their first save. Both participants therefore
+commit to the same job before either persists its execution. The rendezvous is
+test orchestration only; no synchronization mechanism is added to production.
 
 ## Why Distributed Locks Exist
 
-TODO.
+Shared mutual exclusion is needed when only one application instance may enter
+a protected section. A later milestone will introduce that mechanism. It will
+not claim universal exactly-once execution, which also depends on business side
+effects and behavior at failure boundaries.
+
+### Why `lock` Is Not Enough
+
+An in-process critical section could serialize threads in one Worker:
+
+```csharp
+lock (_gate)
+{
+    ExecuteJob();
+}
+```
+
+It cannot coordinate Worker A and Worker B because each process has its own
+memory and its own `_gate` object. A process-local `SemaphoreSlim` has the same
+limitation. Neither mechanism tells another application instance that the job
+is already running.
 
 ## Example Scenario
 
-`DailyReportJob` is a deliberately small business operation. Each execution writes a `JobExecution` row containing the job name, Worker instance, start time, and completion time.
+`DailyReportJob` is a deliberately small business operation. Each execution writes a `JobExecution` row containing the job name, execution key, Worker instance, start time, and completion time.
 
 The local environment runs the same Worker image twice:
 
 - `worker-a` executes the job once;
 - `worker-b` executes the job once;
-- PostgreSQL stores both execution records.
+- both use execution key `2026-09-13`;
+- PostgreSQL stores both execution records for that key.
 
 ## How It Works
 
-Each Worker has a stable identifier supplied through `WORKER_INSTANCE`. A standard `BackgroundService` resolves and executes `DailyReportJob` once after startup, then stops its host. The job first persists that execution started, then marks the record complete and persists the completion time.
+Each Worker has a stable identifier supplied through `WORKER_INSTANCE`. Both
+receive the same `JOB_EXECUTION_KEY`. A standard `BackgroundService` resolves
+and executes `DailyReportJob` once after startup, then stops its host. The job
+first persists that execution started, then marks the record complete and
+persists the completion time.
 
 Worker A and Worker B are independent. There is no mechanism coordinating access to the logical job, and PostgreSQL intentionally accepts both records.
 
@@ -65,6 +128,7 @@ TODO.
 From this directory, run:
 
 ```bash
+docker compose down -v
 docker compose up --build
 ```
 
@@ -75,5 +139,14 @@ No manual database creation or migration command is required. Automatic migratio
 To inspect the executions while the PostgreSQL container is running:
 
 ```bash
-docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "WorkerInstance", "StartedAtUtc", "CompletedAtUtc" FROM "JobExecutions" ORDER BY "StartedAtUtc";'
+docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "ExecutionKey", "WorkerInstance" FROM "JobExecutions" ORDER BY "WorkerInstance";'
+```
+
+The expected durable result is two executions of the same logical job:
+
+```text
+   JobName   | ExecutionKey | WorkerInstance
+-------------+--------------+----------------
+ daily-report | 2026-09-13   | worker-a
+ daily-report | 2026-09-13   | worker-b
 ```

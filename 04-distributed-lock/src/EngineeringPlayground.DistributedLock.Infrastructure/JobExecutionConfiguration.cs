@@ -19,6 +19,10 @@ public sealed class JobExecutionConfiguration : IEntityTypeConfiguration<JobExec
             .HasMaxLength(100)
             .IsRequired();
 
+        builder.Property(jobExecution => jobExecution.ExecutionKey)
+            .HasMaxLength(100)
+            .IsRequired();
+
         builder.Property(jobExecution => jobExecution.WorkerInstance)
             .HasMaxLength(100)
             .IsRequired();

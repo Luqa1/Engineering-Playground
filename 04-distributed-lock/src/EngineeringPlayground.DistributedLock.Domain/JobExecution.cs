@@ -5,16 +5,23 @@ public sealed class JobExecution
     private JobExecution()
     {
         JobName = null!;
+        ExecutionKey = null!;
         WorkerInstance = null!;
     }
 
-    public JobExecution(string jobName, string workerInstance, DateTimeOffset startedAtUtc)
+    public JobExecution(
+        string jobName,
+        string executionKey,
+        string workerInstance,
+        DateTimeOffset startedAtUtc)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(jobName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(executionKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(workerInstance);
 
         Id = Guid.NewGuid();
         JobName = jobName;
+        ExecutionKey = executionKey;
         WorkerInstance = workerInstance;
         StartedAtUtc = startedAtUtc;
     }
@@ -22,6 +29,8 @@ public sealed class JobExecution
     public Guid Id { get; private set; }
 
     public string JobName { get; private set; }
+
+    public string ExecutionKey { get; private set; }
 
     public string WorkerInstance { get; private set; }
 

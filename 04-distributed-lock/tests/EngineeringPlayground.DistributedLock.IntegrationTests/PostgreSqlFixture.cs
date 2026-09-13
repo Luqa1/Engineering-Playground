@@ -1,5 +1,6 @@
 using EngineeringPlayground.DistributedLock.Infrastructure;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
 
 namespace EngineeringPlayground.DistributedLock.IntegrationTests;
@@ -24,13 +25,17 @@ public sealed class PostgreSqlFixture : IAsyncLifetime
         return container.DisposeAsync().AsTask();
     }
 
-    public DistributedLockDbContext CreateDbContext()
+    public DistributedLockDbContext CreateDbContext(params IInterceptor[] interceptors)
     {
-        var options = new DbContextOptionsBuilder<DistributedLockDbContext>()
-            .UseNpgsql(ConnectionString)
-            .Options;
+        var optionsBuilder = new DbContextOptionsBuilder<DistributedLockDbContext>()
+            .UseNpgsql(ConnectionString);
 
-        return new DistributedLockDbContext(options);
+        if (interceptors.Length > 0)
+        {
+            optionsBuilder.AddInterceptors(interceptors);
+        }
+
+        return new DistributedLockDbContext(optionsBuilder.Options);
     }
 }
 

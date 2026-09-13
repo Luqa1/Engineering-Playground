@@ -8,7 +8,11 @@ public sealed class OneShotWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Worker starting: {WorkerInstance}", workerOptions.Instance);
+        logger.LogInformation(
+            "Worker starting: {WorkerInstance} for {JobName} {ExecutionKey}",
+            workerOptions.Instance,
+            DailyReportJob.JobName,
+            workerOptions.JobExecutionKey);
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var job = scope.ServiceProvider.GetRequiredService<DailyReportJob>();

@@ -86,6 +86,8 @@ Avoid generic scheduling abstractions.
 
 ## M3 – Duplicate Execution Scenario
 
+Status: Complete.
+
 Goal: Demonstrate the problem before implementing the solution.
 
 Create a deterministic scenario where two application instances attempt to execute the same logical job.
