@@ -28,7 +28,7 @@ Each PoC README answers:
 1. [Outbox Pattern](01-outbox-pattern/) — atomically persists business data and integration events, then publishes them asynchronously. **Status: Completed.**
 2. [Structured Logging & Observability](02-structured-logging/) — demonstrates production troubleshooting with structured, contextual, correlated, and centralized logs. **Status: Completed.**
 3. [Optimistic Concurrency](03-optimistic-concurrency/) — prevents silent lost updates with atomic version checks and explicit conflict handling. **Status: Completed.**
-4. Distributed Lock
+4. [Distributed Lock](04-distributed-lock/) — coordinates protected work across multiple application instances. **Status: In Progress.**
 5. Saga Pattern
 6. CQRS
 
