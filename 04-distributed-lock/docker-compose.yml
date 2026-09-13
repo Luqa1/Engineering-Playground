@@ -1,2 +1,49 @@
-# TODO: Define services in a later milestone.
-services: {}
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-distributed_lock}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - postgres-data:/var/lib/postgresql
+
+  worker-a:
+    image: engineering-playground-distributed-lock-worker
+    build:
+      context: .
+      dockerfile: src/EngineeringPlayground.DistributedLock.Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      WORKER_INSTANCE: worker-a
+      APPLY_MIGRATIONS: "true"
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=${POSTGRES_DB:-distributed_lock};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker-b:
+    image: engineering-playground-distributed-lock-worker
+    build:
+      context: .
+      dockerfile: src/EngineeringPlayground.DistributedLock.Worker/Dockerfile
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      WORKER_INSTANCE: worker-b
+      APPLY_MIGRATIONS: "false"
+      ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=${POSTGRES_DB:-distributed_lock};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      worker-a:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

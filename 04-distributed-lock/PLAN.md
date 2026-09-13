@@ -66,6 +66,8 @@ Expected outcome:
 
 ## M2 – Running Application
 
+Status: Complete.
+
 Goal: Create the smallest working .NET 10 application needed for the multi-instance job scenario.
 
 Expected outcome:
