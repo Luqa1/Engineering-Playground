@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace EngineeringPlayground.DistributedLock.Infrastructure;
 
@@ -9,8 +10,11 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         string connectionString)
     {
-        services.AddDbContext<DistributedLockDbContext>(options =>
-            options.UseNpgsql(connectionString));
+        services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
+        services.AddSingleton<PostgresAdvisoryLock>();
+
+        services.AddDbContext<DistributedLockDbContext>((serviceProvider, options) =>
+            options.UseNpgsql(serviceProvider.GetRequiredService<NpgsqlDataSource>()));
 
         return services;
     }

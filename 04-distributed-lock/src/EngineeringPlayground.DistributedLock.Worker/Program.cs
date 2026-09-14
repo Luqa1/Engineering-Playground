@@ -22,6 +22,7 @@ builder.Services.AddDistributedLockInfrastructure(connectionString);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(new WorkerOptions(workerInstance, jobExecutionKey));
 builder.Services.AddScoped<DailyReportJob>();
+builder.Services.AddScoped<DailyReportJobRunner>();
 builder.Services.AddHostedService<OneShotWorker>();
 
 var host = builder.Build();

@@ -108,18 +108,24 @@ Do not implement the distributed lock yet.
 
 ## M4 – Distributed Lock
 
+Status: Complete.
+
 Goal: Introduce a distributed lock so only one application instance can execute the protected operation at a time.
 
-Use the simplest appropriate mechanism for this PoC. The implementation should demonstrate:
+Provider decision: **PostgreSQL session-level advisory locks**. PostgreSQL already
+persists the observable job result, and its advisory locks coordinate independent
+database sessions without adding Redis or another coordination service. The
+implementation demonstrates:
 
 - lock acquisition;
 - exclusive ownership;
 - protected critical section;
 - release after completion.
 
-Select the backing mechanism during M4 based on clarity and educational value. Compare a simple Redis-based lock with PostgreSQL advisory locking, but implement only one.
-
-Choose the mechanism that most clearly demonstrates distributed coordination with minimal incidental complexity. Do not introduce a generic distributed-lock framework unless required.
+The non-blocking `pg_try_advisory_lock` operation is used so a competing Worker
+skips the current execution instead of waiting. A dedicated PostgreSQL connection
+owns the session-level lock until the protected job finishes and the same session
+explicitly releases it.
 
 Expected outcome:
 

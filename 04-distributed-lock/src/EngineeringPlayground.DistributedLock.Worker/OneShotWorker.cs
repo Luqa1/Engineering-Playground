@@ -15,8 +15,8 @@ public sealed class OneShotWorker(
             workerOptions.JobExecutionKey);
 
         await using var scope = scopeFactory.CreateAsyncScope();
-        var job = scope.ServiceProvider.GetRequiredService<DailyReportJob>();
-        await job.ExecuteAsync(stoppingToken);
+        var jobRunner = scope.ServiceProvider.GetRequiredService<DailyReportJobRunner>();
+        await jobRunner.TryExecuteAsync(stoppingToken);
 
         applicationLifetime.StopApplication();
     }

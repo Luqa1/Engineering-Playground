@@ -79,7 +79,7 @@ public sealed class DailyReportJobTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
-    public async Task TwoIndependentWorkersExecuteTheSameLogicalJobTwice()
+    public async Task TwoIndependentWorkersWithoutDistributedLockExecuteTheSameLogicalJobTwice()
     {
         var executionKey = $"duplicate-window-{Guid.NewGuid():N}";
         var rendezvous = new ExecutionRendezvous(2);
