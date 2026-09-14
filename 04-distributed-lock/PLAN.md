@@ -55,6 +55,8 @@ Do not build a general-purpose job scheduler. Do not introduce Hangfire, Quartz,
 
 ## M1 – Repository Skeleton
 
+Status: Complete.
+
 Goal: Prepare the PoC structure and implementation plan.
 
 Expected outcome:

@@ -99,6 +99,29 @@ public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
         await participantBOwnership.DisposeAsync();
     }
 
+    [Fact]
+    public async Task CoordinationInfrastructureFailureDoesNotExecuteTheJob()
+    {
+        var executionKey = $"coordination-failure-window-{Guid.NewGuid():N}";
+        var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await dataSource.DisposeAsync();
+        await using var dbContext = fixture.CreateDbContext();
+        var runner = CreateRunner(
+            dataSource,
+            dbContext,
+            "worker-a",
+            executionKey);
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => runner.TryExecuteAsync());
+
+        await using var verificationContext = fixture.CreateDbContext();
+        var executionCount = await verificationContext.JobExecutions.CountAsync(
+            candidate => candidate.JobName == DailyReportJob.JobName
+                && candidate.ExecutionKey == executionKey);
+        Assert.Equal(0, executionCount);
+    }
+
     private static DailyReportJobRunner CreateRunner(
         NpgsqlDataSource dataSource,
         DistributedLockDbContext dbContext,

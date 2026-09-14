@@ -50,6 +50,26 @@ public sealed class PostgresAdvisoryLockTests(PostgreSqlFixture fixture)
     }
 
     [Fact]
+    public async Task DifferentLogicalExecutionKeysCanBeOwnedAtTheSameTime()
+    {
+        var firstExecutionKey = $"independent-window-a-{Guid.NewGuid():N}";
+        var secondExecutionKey = $"independent-window-b-{Guid.NewGuid():N}";
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var participantA = new PostgresAdvisoryLock(dataSource);
+        var participantB = new PostgresAdvisoryLock(dataSource);
+
+        await using var participantALease = await participantA.TryAcquireAsync(
+            DailyReportJob.JobName,
+            firstExecutionKey);
+        Assert.NotNull(participantALease);
+
+        await using var participantBLease = await participantB.TryAcquireAsync(
+            DailyReportJob.JobName,
+            secondExecutionKey);
+        Assert.NotNull(participantBLease);
+    }
+
+    [Fact]
     public async Task OwnerSessionRetainsLockAndAnotherSessionCannotReleaseIt()
     {
         var lockKey = PostgresAdvisoryLockKey.Create(

@@ -43,6 +43,8 @@ public sealed class DailyReportJobRunner(
             DailyReportJob.JobName,
             workerOptions.JobExecutionKey);
 
+        Exception? protectedOperationException = null;
+
         try
         {
             await job.ExecuteAsync(cancellationToken);
@@ -50,6 +52,7 @@ public sealed class DailyReportJobRunner(
         }
         catch (Exception exception)
         {
+            protectedOperationException = exception;
             logger.LogError(
                 exception,
                 "Protected operation failed: {WorkerInstance} {JobName} {ExecutionKey}",
@@ -60,12 +63,25 @@ public sealed class DailyReportJobRunner(
         }
         finally
         {
-            await lease.DisposeAsync();
-            logger.LogInformation(
-                "Distributed lock released: {WorkerInstance} {JobName} {ExecutionKey}",
-                workerOptions.Instance,
-                DailyReportJob.JobName,
-                workerOptions.JobExecutionKey);
+            try
+            {
+                await lease.DisposeAsync();
+                logger.LogInformation(
+                    "Distributed lock released: {WorkerInstance} {JobName} {ExecutionKey}",
+                    workerOptions.Instance,
+                    DailyReportJob.JobName,
+                    workerOptions.JobExecutionKey);
+            }
+            catch (Exception exception) when (protectedOperationException is not null)
+            {
+                logger.LogError(
+                    exception,
+                    "Distributed lock cleanup failed after the protected operation failed: " +
+                    "{WorkerInstance} {JobName} {ExecutionKey}",
+                    workerOptions.Instance,
+                    DailyReportJob.JobName,
+                    workerOptions.JobExecutionKey);
+            }
         }
     }
 }

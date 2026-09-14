@@ -11,9 +11,9 @@ The example uses .NET 10 Worker Services, PostgreSQL, EF Core for execution
 persistence, and Docker Compose. It follows this progression:
 
 ```text
-multiple application instances
-        ↓
 same logical job
+        ↓
+multiple independent instances
         ↓
 no shared coordination
         ↓
@@ -213,8 +213,10 @@ Connection pooling matters because the lock belongs to the physical database
 session. Returning a still-locked connection to the pool could expose that
 session and lock state to unrelated later work. The implementation explicitly
 unlocks first and only then disposes the dedicated connection. A failed
-acquisition disposes its connection immediately. The session-loss integration
-test disables pooling so disposing the owner deterministically terminates the
+acquisition disposes its connection immediately. If an acquisition or unlock
+command fails with ambiguous session state, the pool is cleared before disposal
+so that physical session is not reused. The session-loss integration test
+disables pooling so disposing the owner deterministically terminates the
 physical session.
 
 ## Multi-Instance Scenario
@@ -254,7 +256,8 @@ it does not depend on arbitrary delays.
   skips its current one-shot attempt.
 - **The protected operation throws.** The runner's `finally` block disposes the
   lease, which normally releases the advisory lock before the exception
-  propagates.
+  propagates. If cleanup also fails, that failure is logged without replacing
+  the original protected-operation exception.
 - **The owning session disappears.** PostgreSQL releases the session-level lock
   when it ends, allowing a later session to acquire the key.
 - **PostgreSQL is unavailable.** The Worker cannot use its coordination
@@ -332,7 +335,7 @@ flowchart TD
 ```
 
 At runtime, both Worker containers share PostgreSQL for coordination and
-persistence:
+persistence. A one-shot migration process finishes before either Worker starts:
 
 ```text
 worker-a ──┐
@@ -385,12 +388,13 @@ docker compose down -v
 docker compose up --build
 ```
 
-Compose starts the `postgres`, `worker-a`, and `worker-b` services. Both Workers
-target `daily-report` / `2026-09-13`; the winner can be either instance.
-`worker-a` applies EF Core migrations automatically because it runs in
-`Development` with `APPLY_MIGRATIONS=true`. No manual database creation or
-migration command is required. Automatic migrations are disabled in
-`Production`, where a controlled migration step is required.
+Compose starts PostgreSQL, runs the one-shot `migrations` service, and starts
+`worker-a` and `worker-b` only after migration succeeds. Both Workers target
+`daily-report` / `2026-09-13`; the winner can be either instance. The migration
+runner applies EF Core migrations automatically because it runs in
+`Development` with `MIGRATE_ONLY=true`. No manual database creation or migration
+command is required. Migration-only startup refuses to run in `Production`,
+where a controlled migration step is required.
 
 The logs identify attempts, acquisition, skipping, execution, and release with
 structured `WorkerInstance`, `JobName`, and `ExecutionKey` values.
@@ -421,9 +425,11 @@ The suite uses a real PostgreSQL Testcontainer and verifies:
 - duplicate execution by two independent unprotected jobs;
 - stable lock-key derivation;
 - advisory-lock exclusivity across independent sessions;
+- independent ownership for different logical execution keys;
 - ownership-aware and explicit release;
 - automatic release when the owner session ends;
 - cleanup when protected work throws;
+- failure of coordination infrastructure does not run the job unprotected;
 - deterministic `Executed` and `Skipped` results for competing Workers;
 - one persisted execution during competition; and
 - later acquisition after release.

@@ -9,5 +9,6 @@ flowchart TD
 
     WorkerA[worker-a] --> PostgreSQL[(postgres)]
     WorkerB[worker-b] --> PostgreSQL
+    Migrations[one-shot migrations] -. schema setup .-> PostgreSQL
     PostgreSQL --> Locks[Session-level advisory locks]
     PostgreSQL --> Executions[JobExecutions records]

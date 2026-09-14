@@ -33,6 +33,7 @@ public sealed class PostgresAdvisoryLock(NpgsqlDataSource dataSource)
         }
         catch
         {
+            NpgsqlConnection.ClearPool(connection);
             await connection.DisposeAsync();
             throw;
         }
@@ -65,7 +66,17 @@ public sealed class PostgresAdvisoryLockLease : IAsyncDisposable
                 connection);
             command.Parameters.AddWithValue("lockKey", lockKey);
 
-            var wasReleased = await command.ExecuteScalarAsync() is true;
+            bool wasReleased;
+            try
+            {
+                wasReleased = await command.ExecuteScalarAsync() is true;
+            }
+            catch
+            {
+                NpgsqlConnection.ClearPool(connection);
+                throw;
+            }
+
             if (!wasReleased)
             {
                 throw new InvalidOperationException(
