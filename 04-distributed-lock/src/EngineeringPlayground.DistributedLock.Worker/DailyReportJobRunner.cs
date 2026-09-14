@@ -8,8 +8,15 @@ public sealed class DailyReportJobRunner(
     WorkerOptions workerOptions,
     ILogger<DailyReportJobRunner> logger)
 {
-    public async Task<Guid?> TryExecuteAsync(CancellationToken cancellationToken = default)
+    public async Task<JobExecutionAttemptResult> TryExecuteAsync(
+        CancellationToken cancellationToken = default)
     {
+        logger.LogInformation(
+            "Attempting job execution: {WorkerInstance} {JobName} {ExecutionKey}",
+            workerOptions.Instance,
+            DailyReportJob.JobName,
+            workerOptions.JobExecutionKey);
+
         var lease = await advisoryLock.TryAcquireAsync(
             DailyReportJob.JobName,
             workerOptions.JobExecutionKey,
@@ -18,11 +25,16 @@ public sealed class DailyReportJobRunner(
         if (lease is null)
         {
             logger.LogInformation(
-                "Job execution skipped because another instance owns the distributed lock: {WorkerInstance} {JobName} {ExecutionKey}",
+                "Distributed lock unavailable: {WorkerInstance} {JobName} {ExecutionKey}",
                 workerOptions.Instance,
                 DailyReportJob.JobName,
                 workerOptions.JobExecutionKey);
-            return null;
+            logger.LogInformation(
+                "Job execution skipped: {WorkerInstance} {JobName} {ExecutionKey}",
+                workerOptions.Instance,
+                DailyReportJob.JobName,
+                workerOptions.JobExecutionKey);
+            return JobExecutionAttemptResult.Skipped;
         }
 
         logger.LogInformation(
@@ -33,7 +45,8 @@ public sealed class DailyReportJobRunner(
 
         try
         {
-            return await job.ExecuteAsync(cancellationToken);
+            await job.ExecuteAsync(cancellationToken);
+            return JobExecutionAttemptResult.Executed;
         }
         catch (Exception exception)
         {

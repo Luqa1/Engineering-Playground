@@ -5,8 +5,7 @@ access to the same protected operation with a distributed lock.
 
 > **Work in Progress**
 >
-> M5 adds lock-ownership and session-lifetime failure semantics. Later
-> milestones will focus on the complete multi-instance walkthrough and final
+> M6 adds the complete multi-instance walkthrough. M7 will perform the final
 > documentation review.
 
 ## Problem
@@ -76,30 +75,62 @@ the Worker either becomes the owner immediately or logs that another instance
 owns the lock and skips the current execution. There is no polling, retry, or
 backoff.
 
-```text
-Worker A                PostgreSQL                Worker B
-
-try lock(key)
-    ----------------------->
-                        lock granted
-
-                                                try lock(key)
-                                                ----------->
-                                                not granted
-
-execute DailyReportJob
-
-unlock(key)
-    ----------------------->
-
-                                                try lock(key)
-                                                ----------->
-                                                lock granted
-```
-
 `DailyReportJobRunner` protects only the business operation. `DailyReportJob`
 still creates and completes the `JobExecution` record; unrelated Worker startup
 and database-migration behavior remain outside the lock.
+
+## Multi-Instance Scenario
+
+Both Workers target `daily-report` with the same execution key. The logical job
+identity therefore produces the same advisory-lock key in both processes:
+
+```text
+same logical job
+      ↓
+two Worker instances
+      ↓
+same distributed lock key
+      ↓
+one lock owner
+      ↓
+one job execution
+```
+
+The M6 integration scenario uses two independently configured dependency-
+injection containers and scopes that share the PostgreSQL database. Worker A is
+paused at its first save only after its dedicated PostgreSQL session owns the
+lock. Worker B then uses its own lock session to make a non-blocking attempt and
+receives `Skipped`. Releasing the test gate lets Worker A persist and complete
+the execution, after which its owning session explicitly unlocks. A fresh
+`DbContext` verifies that exactly one row exists and that it belongs to Worker A.
+Finally, Worker B acquires the same lock successfully, proving re-acquisition
+after release without creating a second job record.
+
+```mermaid
+sequenceDiagram
+    participant A as Worker A
+    participant DB as PostgreSQL
+    participant B as Worker B
+    participant Job as DailyReportJob
+
+    A->>DB: Try advisory lock
+    DB-->>A: Granted
+    B->>DB: Try same advisory lock
+    DB-->>B: Denied
+    B-->>B: Skip this attempt
+    A->>Job: Execute
+    Job->>DB: Persist JobExecution
+    Job-->>A: Completed
+    A->>DB: Release advisory lock
+    B->>DB: Later, try same lock
+    DB-->>B: Granted
+```
+
+The losing Worker does not wait indefinitely, execute the job, or persist a
+`JobExecution`; it simply skips that attempt. A failed lock acquisition is not a
+permanent job failure. It means another participating instance currently owns
+the right to execute that logical operation, and a future attempt may succeed.
+This PoC does not add a scheduler or define when such a future attempt occurs.
 
 ## Lock Key
 
@@ -201,7 +232,7 @@ separate recovery or idempotency design, which is outside this PoC.
 
 ## Behavior and Limitations
 
-The M4 guarantee is deliberately narrow:
+The M6 guarantee is deliberately narrow:
 
 > Competing participating Worker instances cannot simultaneously enter the same
 > protected job execution while the advisory lock is held.
@@ -233,7 +264,11 @@ The integration suite uses a real PostgreSQL container and verifies:
 - terminating a non-pooled owner session automatically releases its lock;
 - a protected-operation failure still executes normal lock cleanup and preserves
   the business exception;
-- two orchestrated job runners persist one execution belonging to the lock owner.
+- two independently scoped job runners target the same logical job, return
+  explicit `Executed` and `Skipped` results, and persist one execution belonging
+  to the lock owner;
+- the skipped Worker can acquire the same logical lock after the owner releases
+  it.
 
 The job-level test pauses Worker A at its first database save only after A has
 entered the protected operation. Worker B then attempts the same logical job
@@ -252,24 +287,43 @@ docker compose up --build
 This starts PostgreSQL, Worker A, and Worker B. Both Workers use `daily-report`
 and execution key `2026-09-13`. During the competing attempt, the logs show one
 Worker acquiring the distributed lock and the other skipping execution because
-the lock is owned.
+the lock is owned. The example configuration keeps the winning Worker inside the
+protected operation for two seconds so the competing container can make its
+single attempt while the lock is held. This delay makes the manual behavior easy
+to observe; it is not a retry, scheduling, or locking mechanism, and the
+deterministic integration test uses explicit signals instead of timing.
 
 Worker A remains the non-production migration owner, while Compose no longer
 waits for Worker A's job to finish before starting Worker B. No manual database
 creation or migration command is required. Automatic migrations are disabled in
 `Production`; production deployments require a controlled migration step.
 
-While PostgreSQL is running, verify the durable result with the actual table and
-column names:
+The log progression identifies the attempt, acquisition, protected execution,
+skip, completion, and release using structured `WorkerInstance`, `JobName`, and
+`ExecutionKey` values. The winning instance can be either Worker:
+
+```text
+worker-a: Attempting job execution
+worker-a: Distributed lock acquired
+worker-b: Attempting job execution
+worker-b: Distributed lock unavailable
+worker-b: Job execution skipped
+worker-a: Job execution started
+worker-a: Job execution completed
+worker-a: Distributed lock released
+```
+
+While PostgreSQL is running, verify the durable result and count with the actual
+table and column names:
 
 ```bash
-docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "ExecutionKey", "WorkerInstance" FROM "JobExecutions" ORDER BY "WorkerInstance";'
+docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "ExecutionKey", "WorkerInstance", COUNT(*) OVER () AS "ExecutionCount" FROM "JobExecutions" WHERE "JobName" = '\''daily-report'\'' AND "ExecutionKey" = '\''2026-09-13'\'';'
 ```
 
 The competing logical job has one persisted execution:
 
 ```text
-   JobName    | ExecutionKey | WorkerInstance
---------------+--------------+----------------
- daily-report | 2026-09-13   | worker-a or worker-b
+   JobName    | ExecutionKey |    WorkerInstance    | ExecutionCount
+--------------+--------------+----------------------+---------------
+ daily-report | 2026-09-13   | worker-a or worker-b |              1
 ```

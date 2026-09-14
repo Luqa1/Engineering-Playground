@@ -18,9 +18,19 @@ if (string.IsNullOrWhiteSpace(jobExecutionKey))
     throw new InvalidOperationException("JOB_EXECUTION_KEY is required.");
 }
 
+var protectedWorkDurationSeconds = builder.Configuration.GetValue<int>(
+    "PROTECTED_WORK_DURATION_SECONDS");
+if (protectedWorkDurationSeconds < 0)
+{
+    throw new InvalidOperationException("PROTECTED_WORK_DURATION_SECONDS cannot be negative.");
+}
+
 builder.Services.AddDistributedLockInfrastructure(connectionString);
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton(new WorkerOptions(workerInstance, jobExecutionKey));
+builder.Services.AddSingleton(new WorkerOptions(
+    workerInstance,
+    jobExecutionKey,
+    TimeSpan.FromSeconds(protectedWorkDurationSeconds)));
 builder.Services.AddScoped<DailyReportJob>();
 builder.Services.AddScoped<DailyReportJobRunner>();
 builder.Services.AddHostedService<OneShotWorker>();

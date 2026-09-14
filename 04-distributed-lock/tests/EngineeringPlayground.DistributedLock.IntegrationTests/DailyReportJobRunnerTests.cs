@@ -2,6 +2,7 @@ using EngineeringPlayground.DistributedLock.Infrastructure;
 using EngineeringPlayground.DistributedLock.Worker;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
@@ -11,33 +12,46 @@ namespace EngineeringPlayground.DistributedLock.IntegrationTests;
 public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
 {
     [Fact]
-    public async Task CompetingWorkersPersistOnlyTheLockOwnersExecution()
+    public async Task CompetingWorkersExecuteOnceAndTheSkippedWorkerCanAcquireAfterRelease()
     {
         var executionKey = $"protected-window-{Guid.NewGuid():N}";
+        var workerAOptions = new WorkerOptions("worker-a", executionKey);
+        var workerBOptions = new WorkerOptions("worker-b", executionKey);
         var workerAGate = new FirstSaveGate();
-        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await using var workerAServices = CreateWorkerServices(
+            workerAOptions,
+            workerAGate);
+        await using var workerBServices = CreateWorkerServices(workerBOptions);
+        await using var workerAScope = workerAServices.CreateAsyncScope();
+        await using var workerBScope = workerBServices.CreateAsyncScope();
 
-        await using var workerAContext = fixture.CreateDbContext(workerAGate);
-        await using var workerBContext = fixture.CreateDbContext();
-        var workerA = CreateRunner(dataSource, workerAContext, "worker-a", executionKey);
-        var workerB = CreateRunner(dataSource, workerBContext, "worker-b", executionKey);
+        var workerA = workerAScope.ServiceProvider.GetRequiredService<DailyReportJobRunner>();
+        var workerB = workerBScope.ServiceProvider.GetRequiredService<DailyReportJobRunner>();
 
-        var workerAExecution = workerA.TryExecuteAsync();
-        Guid? workerBExecution;
+        Assert.Equal(
+            PostgresAdvisoryLockKey.Create(
+                DailyReportJob.JobName,
+                workerAOptions.JobExecutionKey),
+            PostgresAdvisoryLockKey.Create(
+                DailyReportJob.JobName,
+                workerBOptions.JobExecutionKey));
+
+        var workerAAttempt = workerA.TryExecuteAsync();
+        JobExecutionAttemptResult workerBResult;
 
         try
         {
             await workerAGate.WaitUntilFirstSaveAsync();
-            workerBExecution = await workerB.TryExecuteAsync();
-            Assert.Null(workerBExecution);
+            workerBResult = await workerB.TryExecuteAsync();
+            Assert.Equal(JobExecutionAttemptResult.Skipped, workerBResult);
         }
         finally
         {
             workerAGate.AllowSave();
         }
 
-        var workerAExecutionId = await workerAExecution;
-        Assert.NotNull(workerAExecutionId);
+        var workerAResult = await workerAAttempt;
+        Assert.Equal(JobExecutionAttemptResult.Executed, workerAResult);
 
         await using var verificationContext = fixture.CreateDbContext();
         var executions = await verificationContext.JobExecutions
@@ -46,8 +60,16 @@ public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
             .ToListAsync();
 
         var execution = Assert.Single(executions);
-        Assert.Equal(workerAExecutionId, execution.Id);
         Assert.Equal("worker-a", execution.WorkerInstance);
+
+        var workerBLock = workerBScope.ServiceProvider
+            .GetRequiredService<PostgresAdvisoryLock>();
+        var workerBLeaseAfterRelease = await workerBLock.TryAcquireAsync(
+            DailyReportJob.JobName,
+            executionKey);
+
+        Assert.NotNull(workerBLeaseAfterRelease);
+        await workerBLeaseAfterRelease.DisposeAsync();
     }
 
     [Fact]
@@ -95,6 +117,28 @@ public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
             job,
             options,
             NullLogger<DailyReportJobRunner>.Instance);
+    }
+
+    private ServiceProvider CreateWorkerServices(
+        WorkerOptions workerOptions,
+        IInterceptor? interceptor = null)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDistributedLockInfrastructure(fixture.ConnectionString);
+
+        if (interceptor is not null)
+        {
+            services.AddDbContext<DistributedLockDbContext>(options =>
+                options.AddInterceptors(interceptor));
+        }
+
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(workerOptions);
+        services.AddScoped<DailyReportJob>();
+        services.AddScoped<DailyReportJobRunner>();
+
+        return services.BuildServiceProvider(validateScopes: true);
     }
 
     private sealed class FirstSaveGate : SaveChangesInterceptor

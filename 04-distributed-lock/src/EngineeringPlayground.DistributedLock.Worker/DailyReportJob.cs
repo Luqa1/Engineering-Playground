@@ -20,14 +20,22 @@ public sealed class DailyReportJob(
             timeProvider.GetUtcNow());
 
         dbContext.JobExecutions.Add(execution);
-        await dbContext.SaveChangesAsync(cancellationToken);
-
         logger.LogInformation(
             "Job execution started: {JobName} {ExecutionKey} {WorkerInstance} {JobExecutionId}",
             execution.JobName,
             execution.ExecutionKey,
             execution.WorkerInstance,
             execution.Id);
+
+        if (workerOptions.ProtectedWorkDuration > TimeSpan.Zero)
+        {
+            await Task.Delay(
+                workerOptions.ProtectedWorkDuration,
+                timeProvider,
+                cancellationToken);
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
 
         execution.Complete(timeProvider.GetUtcNow());
         await dbContext.SaveChangesAsync(cancellationToken);

@@ -157,6 +157,8 @@ Implemented concepts:
 
 ## M6 – Multi-Instance Scenario
 
+Status: Complete.
+
 Goal: Demonstrate the complete behavior with multiple application instances.
 
 Create a deterministic walkthrough:
