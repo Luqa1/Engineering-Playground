@@ -195,6 +195,8 @@ The PoC should not imply that distributed locking automatically guarantees exact
 
 ## M7 – Documentation
 
+Status: Complete.
+
 Goal: Turn the completed PoC into a concise engineering knowledge-base example.
 
 Expected outcome:
@@ -205,7 +207,7 @@ Expected outcome:
 - duplicate-execution explanation;
 - multi-instance walkthrough;
 - lock ownership explanation;
-- expiration and failure semantics;
+- session-lifetime release and failure semantics;
 - trade-offs;
 - when to use;
 - when not to use;
@@ -217,7 +219,7 @@ The README should answer:
 - Why is `lock` or `SemaphoreSlim` insufficient across multiple processes?
 - How does one instance become the lock owner?
 - What happens when the owner crashes?
-- Why does lock expiration or session ownership matter?
+- Why do database-session ownership and lifetime matter?
 - Why must release be ownership-aware?
 - What are the trade-offs?
 - When should a distributed lock be avoided?

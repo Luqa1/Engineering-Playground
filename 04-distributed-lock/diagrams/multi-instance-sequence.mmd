@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant A as Worker A
+    participant DB as PostgreSQL
+    participant B as Worker B
+    participant Job as DailyReportJob
+
+    A->>DB: pg_try_advisory_lock(key)
+    DB-->>A: true (granted)
+    B->>DB: pg_try_advisory_lock(same key)
+    DB-->>B: false (denied)
+    B-->>B: Return Skipped
+    A->>Job: ExecuteAsync
+    Job->>DB: Persist JobExecution
+    Job-->>A: Completed
+    A->>DB: pg_advisory_unlock(key)
+    B->>DB: Later, try same key
+    DB-->>B: true (granted)

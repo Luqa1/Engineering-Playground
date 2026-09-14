@@ -1,0 +1,13 @@
+flowchart TD
+    Worker[EngineeringPlayground.DistributedLock.Worker]
+    Infrastructure[EngineeringPlayground.DistributedLock.Infrastructure]
+    Domain[EngineeringPlayground.DistributedLock.Domain]
+
+    Worker --> Infrastructure
+    Worker --> Domain
+    Infrastructure --> Domain
+
+    WorkerA[worker-a] --> PostgreSQL[(postgres)]
+    WorkerB[worker-b] --> PostgreSQL
+    PostgreSQL --> Locks[Session-level advisory locks]
+    PostgreSQL --> Executions[JobExecutions records]

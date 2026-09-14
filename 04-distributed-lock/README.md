@@ -1,110 +1,352 @@
 # Distributed Lock
 
-This Proof of Concept demonstrates how multiple application instances coordinate
-access to the same protected operation with a distributed lock.
+## Overview
 
-> **Work in Progress**
->
-> M6 adds the complete multi-instance walkthrough. M7 will perform the final
-> documentation review.
+This Proof of Concept demonstrates coordination between independent .NET Worker
+instances with **PostgreSQL session-level advisory locks**. The important problem
+is not concurrency between threads in one process; it is multiple application
+instances attempting the same logical job at the same time.
 
-## Problem
-
-Two independent Worker processes can decide to run the same logical job. Without
-shared coordination, each process can execute the operation successfully.
-
-Both Workers receive the same logical job identity:
+The example uses .NET 10 Worker Services, PostgreSQL, EF Core for execution
+persistence, and Docker Compose. It follows this progression:
 
 ```text
-JobName       ExecutionKey
-daily-report  2026-09-13
+multiple application instances
+        ↓
+same logical job
+        ↓
+no shared coordination
+        ↓
+duplicate execution
+        ↓
+distributed lock
+        ↓
+one lock owner
+        ↓
+one protected execution
 ```
 
-`JobName` identifies the operation. `ExecutionKey` identifies the execution
-window. `WorkerInstance` identifies the application instance that attempted the
-job; it is not part of the logical job identity.
+## The Problem
 
-## Duplicate Execution
+`worker-a` and `worker-b` both run `DailyReportJob`. Each Worker can independently
+decide to execute the same logical operation, identified by:
 
-Before M4, the scenario was:
+```text
+JobName + ExecutionKey
+```
+
+Without shared coordination, both decisions are valid locally:
 
 ```text
 Worker A                       Worker B
    |                              |
-   | daily-report / 2026-09-13    | daily-report / 2026-09-13
+   | same logical job             | same logical job
    |                              |
    | execute                      | execute
    |                              |
    +---------- PostgreSQL --------+
-              two records
+              two executions
 ```
 
-PostgreSQL intentionally has no unique constraint on `(JobName, ExecutionKey)`.
-The M3 integration test preserves evidence of this underlying unsafe path by
-executing two unprotected `DailyReportJob` instances. Both records are accepted,
-showing that persistence alone does not coordinate the Workers.
+The duplicate `JobExecutions` rows are evidence of the problem. The real problem
+is that two independent application instances performed the same logical
+operation.
 
-An in-process `lock` or `SemaphoreSlim` can coordinate threads that share one
-process:
+## Duplicate Execution
+
+The retained unprotected scenario executes two `DailyReportJob` instances with
+the same `JobName` and `ExecutionKey`. Both executions succeed, and PostgreSQL
+stores both rows because the schema intentionally has no unique constraint on
+those columns.
+
+In production, duplicate execution might send a notification twice, generate a
+report twice, repeat maintenance, or invoke an external operation twice. A
+distributed lock is one possible coordination mechanism; it is not the right
+answer to every duplicate-execution problem.
+
+## Why In-Process Locks Are Not Enough
+
+`lock` and `SemaphoreSlim` coordinate callers that share one application
+process. These Workers do not share memory:
 
 ```text
-lock / SemaphoreSlim
-        ↓
-coordinates threads in one process
+Worker process A              Worker process B
+
+SemaphoreSlim A               SemaphoreSlim B
+      ↓                             ↓
+local memory                   local memory
 ```
 
-Worker A and Worker B have separate memory, so each would own a different
-in-process lock:
+Each Worker could acquire its own in-process lock and still execute concurrently.
+In this PoC, both instead consult shared coordination infrastructure:
 
 ```text
-PostgreSQL advisory lock
-        ↓
-coordinates independent processes through shared infrastructure
+Worker A ──┐
+           ├── PostgreSQL advisory lock
+Worker B ──┘
 ```
 
-## Distributed Lock
+## Example Scenario
 
-M4 uses a **PostgreSQL session-level advisory lock**. PostgreSQL was selected
-because it already exists in this PoC, advisory locks coordinate independent
-database sessions rather than process-local memory, session ownership gives the
-lock a clear lifecycle, and no Redis service or distributed-lock library is
-needed.
+The configured logical job is:
 
-Each Worker tries the lock once with `pg_try_advisory_lock`. This is non-blocking:
-the Worker either becomes the owner immediately or logs that another instance
-owns the lock and skips the current execution. There is no polling, retry, or
-backoff.
+```text
+JobName       = daily-report
+ExecutionKey  = 2026-09-13
+```
 
-`DailyReportJobRunner` protects only the business operation. `DailyReportJob`
-still creates and completes the `JobExecution` record; unrelated Worker startup
-and database-migration behavior remain outside the lock.
+`WorkerInstance` is `worker-a` or `worker-b`, but it is not part of the logical
+job identity. Every participant targeting the same operation must derive the
+same advisory-lock key from `JobName + ExecutionKey`.
+
+Both containers are one-shot Workers. They attempt the job once and then stop.
+The two-second `PROTECTED_WORK_DURATION_SECONDS` setting makes their competition
+easy to observe; it is not a scheduling, retry, or locking mechanism.
+
+## How the Distributed Lock Works
+
+`DailyReportJobRunner` performs the following flow:
+
+```text
+attempt logical job
+      ↓
+derive deterministic lock key
+      ↓
+open dedicated PostgreSQL connection
+      ↓
+pg_try_advisory_lock
+      ↓
+ acquired?
+   /       \
+ yes        no
+  |          |
+execute     skip
+  |
+pg_advisory_unlock
+  |
+dispose connection
+```
+
+Acquisition is non-blocking. `pg_try_advisory_lock` returns immediately, so a
+Worker that loses the competition returns `Skipped` instead of waiting,
+polling, or retrying. The owner runs `DailyReportJob`, which creates and
+completes a `JobExecution` through EF Core.
+
+### Why PostgreSQL Advisory Locks
+
+PostgreSQL was already needed to persist the observable job result. Its advisory
+locks coordinate independent database sessions, session ownership gives the lock
+a clear lifecycle, and no Redis service or additional lock library is necessary.
+That keeps this PoC focused; it does not imply that PostgreSQL advisory locks are
+universally preferable to Redis-based locks.
+
+## Lock Identity
+
+`PostgresAdvisoryLockKey.Create` constructs this byte sequence:
+
+```text
+UTF-8(JobName) + null separator + UTF-8(ExecutionKey)
+```
+
+It hashes the sequence with SHA-256 and interprets the first eight bytes as a
+signed, big-endian 64-bit integer for PostgreSQL's advisory-lock key. The result
+is stable across processes and runtime restarts. `string.GetHashCode()` would be
+inappropriate because its result is not a stable distributed coordination
+contract. As with any fixed-size hash key, a collision is theoretically possible.
+
+## Lock Ownership and Session Lifetime
+
+> A PostgreSQL session-level advisory lock belongs to the database session that
+> acquired it.
+
+```text
+Connection / Session A
+        ↓
+pg_try_advisory_lock(key)
+        ↓
+Session A owns the lock
+```
+
+While session A owns the lock, session B receives `false` from
+`pg_try_advisory_lock` for the same key. `PostgresAdvisoryLock` therefore opens a
+dedicated `NpgsqlConnection` and keeps that connection—and its underlying
+session—alive throughout the protected operation. Ownership cannot be moved to
+another connection, and another session cannot unlock session A's lock.
+
+## Explicit and Automatic Release
+
+The normal path explicitly releases the lock on the owning session:
+
+```text
+open session
+    ↓
+acquire
+    ↓
+execute
+    ↓
+pg_advisory_unlock on the owning session
+    ↓
+dispose connection
+```
+
+`DailyReportJobRunner` disposes the lock lease in a `finally` block, including
+when the protected operation throws. If the process or database session
+disappears before that cleanup, PostgreSQL ends the session and automatically
+releases its session-level advisory locks:
+
+```text
+acquire
+    ↓
+process / database session disappears
+    ↓
+PostgreSQL ends the session
+    ↓
+lock is released
+```
+
+This mechanism has no TTL, lease timer, or renewal loop. Its failure semantics
+come from database-session lifetime, unlike a TTL-based Redis-style lease.
+
+### Connection Pooling
+
+Connection pooling matters because the lock belongs to the physical database
+session. Returning a still-locked connection to the pool could expose that
+session and lock state to unrelated later work. The implementation explicitly
+unlocks first and only then disposes the dedicated connection. A failed
+acquisition disposes its connection immediately. The session-loss integration
+test disables pooling so disposing the owner deterministically terminates the
+physical session.
 
 ## Multi-Instance Scenario
 
-Both Workers target `daily-report` with the same execution key. The logical job
-identity therefore produces the same advisory-lock key in both processes:
-
 ```text
-same logical job
-      ↓
-two Worker instances
-      ↓
-same distributed lock key
-      ↓
-one lock owner
-      ↓
-one job execution
+Worker A                     PostgreSQL                     Worker B
+
+try lock
+   ---------------------------->
+                              granted
+
+                                                       try same lock
+                                                       ----------->
+                                                              denied
+
+execute job                                           skip
+
+persist execution
+
+unlock
+   ---------------------------->
+
+                                                       later attempt
+                                                       ----------->
+                                                              granted
 ```
 
-The M6 integration scenario uses two independently configured dependency-
-injection containers and scopes that share the PostgreSQL database. Worker A is
-paused at its first save only after its dedicated PostgreSQL session owns the
-lock. Worker B then uses its own lock session to make a non-blocking attempt and
-receives `Skipped`. Releasing the test gate lets Worker A persist and complete
-the execution, after which its owning session explicitly unlocks. A fresh
-`DbContext` verifies that exactly one row exists and that it belongs to Worker A.
-Finally, Worker B acquires the same lock successfully, proving re-acquisition
-after release without creating a second job record.
+During the competing attempt, only the lock owner enters `DailyReportJob` and
+persists a row. The losing Worker skips without persisting. After the owner
+releases the lock, a later attempt can acquire it. The integration test makes
+this ordering deterministic with an EF Core interceptor and completion signals;
+it does not depend on arbitrary delays.
+
+## Failure Scenarios
+
+- **The Worker cannot acquire the lock.** Another session owns it, so the Worker
+  skips its current one-shot attempt.
+- **The protected operation throws.** The runner's `finally` block disposes the
+  lease, which normally releases the advisory lock before the exception
+  propagates.
+- **The owning session disappears.** PostgreSQL releases the session-level lock
+  when it ends, allowing a later session to acquire the key.
+- **PostgreSQL is unavailable.** The Worker cannot use its coordination
+  infrastructure and cannot safely acquire this lock. The implementation does
+  not add retries or another lock provider.
+
+## What the Lock Guarantees
+
+> Participating Worker instances using the same advisory-lock protocol cannot
+> concurrently enter the protected operation for the same lock key while one
+> database session owns that lock.
+
+PostgreSQL advisory locks are **cooperative**. They protect only code paths that
+follow the same lock-key and acquisition convention. A process that ignores the
+advisory lock can still perform the underlying business operation.
+
+## What the Lock Does Not Guarantee
+
+Distributed mutual exclusion is not universal exactly-once execution:
+
+```text
+acquire lock
+      ↓
+perform side effect
+      ↓
+side effect succeeds
+      ↓
+process crashes
+      ↓
+session ends
+      ↓
+lock becomes available
+      ↓
+another Worker executes later
+```
+
+The later Worker cannot learn from the lock alone whether the earlier side effect
+succeeded. Depending on the operation, a production design may also need
+idempotency, database constraints, transactional state, deduplication,
+inbox/outbox patterns, or workflow state.
+
+### Distributed Lock vs Database Constraint
+
+A unique database constraint protects a data invariant such as “only one row
+with this unique key.” A distributed lock coordinates entry into a broader
+critical section. They are not interchangeable, and a lock does not remove the
+need for constraints that independently express valid data.
+
+### Distributed Lock vs Optimistic Concurrency
+
+```text
+Optimistic concurrency:             Distributed lock:
+allow competing work                coordinate before protected work
+        ↓                                      ↓
+detect a conflicting write          only the lock owner enters
+```
+
+Optimistic concurrency detects that shared state changed before a write can
+safely complete. A distributed lock decides who may enter protected work at a
+given time.
+
+## Architecture
+
+The project dependencies remain small and point toward the Domain project:
+
+```mermaid
+flowchart TD
+    Worker[EngineeringPlayground.DistributedLock.Worker]
+    Infrastructure[EngineeringPlayground.DistributedLock.Infrastructure]
+    Domain[EngineeringPlayground.DistributedLock.Domain]
+
+    Worker --> Infrastructure
+    Worker --> Domain
+    Infrastructure --> Domain
+```
+
+At runtime, both Worker containers share PostgreSQL for coordination and
+persistence:
+
+```text
+worker-a ──┐
+           │
+           ├── postgres
+           │      ├── session-level advisory locks
+           │      └── JobExecutions records
+           │
+worker-b ──┘
+```
+
+See the standalone [architecture diagram](diagrams/architecture.mmd).
+
+## Sequence Diagram
 
 ```mermaid
 sequenceDiagram
@@ -113,217 +355,113 @@ sequenceDiagram
     participant B as Worker B
     participant Job as DailyReportJob
 
-    A->>DB: Try advisory lock
-    DB-->>A: Granted
-    B->>DB: Try same advisory lock
-    DB-->>B: Denied
-    B-->>B: Skip this attempt
-    A->>Job: Execute
+    A->>DB: pg_try_advisory_lock(key)
+    DB-->>A: true (granted)
+    B->>DB: pg_try_advisory_lock(same key)
+    DB-->>B: false (denied)
+    B-->>B: Return Skipped
+    A->>Job: ExecuteAsync
     Job->>DB: Persist JobExecution
     Job-->>A: Completed
-    A->>DB: Release advisory lock
-    B->>DB: Later, try same lock
-    DB-->>B: Granted
+    A->>DB: pg_advisory_unlock(key)
+    B->>DB: Later, try same key
+    DB-->>B: true (granted)
 ```
 
-The losing Worker does not wait indefinitely, execute the job, or persist a
-`JobExecution`; it simply skips that attempt. A failed lock acquisition is not a
-permanent job failure. It means another participating instance currently owns
-the right to execute that logical operation, and a future attempt may succeed.
-This PoC does not add a scheduler or define when such a future attempt occurs.
-
-## Lock Key
-
-The logical lock identity is `JobName + ExecutionKey`. The implementation joins
-their UTF-8 representations with an explicit null separator, hashes that value
-with SHA-256, and interprets the first eight hash bytes as a signed 64-bit
-big-endian integer for PostgreSQL's advisory-lock key space.
-
-This conversion is deterministic across processes and runtime restarts.
-`string.GetHashCode()` is not used because it is runtime-randomized and is not a
-stable coordination contract. As with any fixed-size hash, a collision is
-theoretically possible.
-
-## Lock Ownership and Session Lifetime
-
-> A session-level PostgreSQL advisory lock belongs to the database session that
-> acquired it.
-
-```text
-PostgreSQL session A
-        ↓
-acquires advisory lock
-        ↓
-session A owns lock
-```
-
-`PostgresAdvisoryLock` opens a dedicated `NpgsqlConnection` for each acquisition.
-When acquisition succeeds, the connection remains open while `DailyReportJob`
-executes. Another physical PostgreSQL session cannot acquire the same lock and
-cannot release session A's lock:
-
-```text
-PostgreSQL session B
-        ↓
-tries the same advisory lock
-        ↓
-not granted
-```
-
-The ownership handle explicitly calls `pg_advisory_unlock` on the same connection
-in the runner's `finally` cleanup path, then disposes the connection. A failed
-acquisition closes its connection immediately and never attempts an unlock. The
-database session itself is the ownership identity; there is no application token
-or ownership table, and ownership cannot migrate to another connection.
-
-### Explicit and Automatic Release
-
-Explicit release is the normal application behavior:
-
-```text
-acquire
-  ↓
-work
-  ↓
-explicit unlock on the owning session
-  ↓
-close connection
-```
-
-If the process or connection disappears before cleanup, PostgreSQL session
-lifetime provides the safety net:
-
-```text
-acquire
-  ↓
-process / connection disappears
-  ↓
-PostgreSQL session ends
-  ↓
-lock automatically released
-  ↓
-another session may acquire it
-```
-
-This PoC does not use timer-based expiration, TTL, or renewal. Those concepts are
-common in Redis-style locks that use an ownership token plus TTL; PostgreSQL
-session-level advisory locks instead use database-session ownership.
-
-### Connection Pooling
-
-Session-level advisory locks require care with connection pooling. Returning a
-connection to its pool while it still owns a lock could transfer that live
-session, and therefore its lock state, to unrelated later work. The normal path
-always attempts the explicit unlock before disposing and returning the dedicated
-connection. The session-loss integration test disables pooling for its two test
-connections so disposing the owner deterministically terminates the physical
-PostgreSQL session rather than merely returning it to a pool.
-
-The ordinary EF Core `DbContext` connection lifecycle is not used as implicit
-lock ownership.
-
-### Lock Release Is Not Job Success
-
-A successfully released lock means mutual exclusion ended; it does not mean the
-business operation completed successfully. If protected work throws, the runner
-logs the failure, attempts explicit unlock in its cleanup path, and lets the
-original business exception propagate. Any partial side effects still require a
-separate recovery or idempotency design, which is outside this PoC.
-
-## Behavior and Limitations
-
-The M6 guarantee is deliberately narrow:
-
-> Competing participating Worker instances cannot simultaneously enter the same
-> protected job execution while the advisory lock is held.
-
-This is not a claim of exactly-once execution. Consider a process that performs
-an external side effect and then crashes before recording completion. Its session
-ends, PostgreSQL releases the lock, and another Worker may later repeat the side
-effect. Idempotency, transactional state, deduplication, Outbox/inbox patterns,
-or workflow state may address that broader problem; this PoC does not implement
-them. Advisory locks also do not persist through a PostgreSQL restart and cannot
-protect clients that ignore the locking protocol.
-
-The approach is useful when a small number of cooperating processes already use
-PostgreSQL and need mutual exclusion around a short logical operation. It is a
-poor fit when the database should not be part of coordination, when work must be
-queued rather than skipped, or when correctness requires durable state beyond a
-database session.
-
-## Tests
-
-The integration suite uses a real PostgreSQL container and verifies:
-
-- the M3 unprotected operation can still execute twice;
-- participant A acquires a lock on one PostgreSQL session;
-- participant B fails immediately on another session;
-- participant A executes the protected job and releases the lock;
-- participant B can acquire the same lock after release;
-- a non-owner session cannot release the owner's lock;
-- terminating a non-pooled owner session automatically releases its lock;
-- a protected-operation failure still executes normal lock cleanup and preserves
-  the business exception;
-- two independently scoped job runners target the same logical job, return
-  explicit `Executed` and `Skipped` results, and persist one execution belonging
-  to the lock owner;
-- the skipped Worker can acquire the same logical lock after the owner releases
-  it.
-
-The job-level test pauses Worker A at its first database save only after A has
-entered the protected operation. Worker B then attempts the same logical job
-before A is allowed to finish. Test synchronization uses explicit completion
-signals, not delays or scheduler timing.
+See the standalone [sequence diagram](diagrams/multi-instance-sequence.mmd).
 
 ## Running the Example
 
-From this directory, run:
+From `04-distributed-lock/`, start the complete environment with:
+
+```bash
+docker compose up --build
+```
+
+For a repeatable demonstration with an empty database volume:
 
 ```bash
 docker compose down -v
 docker compose up --build
 ```
 
-This starts PostgreSQL, Worker A, and Worker B. Both Workers use `daily-report`
-and execution key `2026-09-13`. During the competing attempt, the logs show one
-Worker acquiring the distributed lock and the other skipping execution because
-the lock is owned. The example configuration keeps the winning Worker inside the
-protected operation for two seconds so the competing container can make its
-single attempt while the lock is held. This delay makes the manual behavior easy
-to observe; it is not a retry, scheduling, or locking mechanism, and the
-deterministic integration test uses explicit signals instead of timing.
+Compose starts the `postgres`, `worker-a`, and `worker-b` services. Both Workers
+target `daily-report` / `2026-09-13`; the winner can be either instance.
+`worker-a` applies EF Core migrations automatically because it runs in
+`Development` with `APPLY_MIGRATIONS=true`. No manual database creation or
+migration command is required. Automatic migrations are disabled in
+`Production`, where a controlled migration step is required.
 
-Worker A remains the non-production migration owner, while Compose no longer
-waits for Worker A's job to finish before starting Worker B. No manual database
-creation or migration command is required. Automatic migrations are disabled in
-`Production`; production deployments require a controlled migration step.
+The logs identify attempts, acquisition, skipping, execution, and release with
+structured `WorkerInstance`, `JobName`, and `ExecutionKey` values.
 
-The log progression identifies the attempt, acquisition, protected execution,
-skip, completion, and release using structured `WorkerInstance`, `JobName`, and
-`ExecutionKey` values. The winning instance can be either Worker:
+## Verifying the Result
 
-```text
-worker-a: Attempting job execution
-worker-a: Distributed lock acquired
-worker-b: Attempting job execution
-worker-b: Distributed lock unavailable
-worker-b: Job execution skipped
-worker-a: Job execution started
-worker-a: Job execution completed
-worker-a: Distributed lock released
-```
-
-While PostgreSQL is running, verify the durable result and count with the actual
-table and column names:
+After the clean-state workflow, inspect the real table and columns:
 
 ```bash
-docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "ExecutionKey", "WorkerInstance", COUNT(*) OVER () AS "ExecutionCount" FROM "JobExecutions" WHERE "JobName" = '\''daily-report'\'' AND "ExecutionKey" = '\''2026-09-13'\'';'
+docker compose exec postgres psql -U postgres -d distributed_lock -c 'SELECT "JobName", "ExecutionKey", "WorkerInstance", "StartedAtUtc", "CompletedAtUtc", COUNT(*) OVER () AS "ExecutionCount" FROM "JobExecutions" ORDER BY "StartedAtUtc";'
 ```
 
-The competing logical job has one persisted execution:
+For the shared `daily-report` / `2026-09-13` attempt, the result contains one row
+and `ExecutionCount` is `1`. That row shows which Worker acquired the lock. If
+`POSTGRES_DB` is overridden in `.env`, use that database name in the command.
 
-```text
-   JobName    | ExecutionKey |    WorkerInstance    | ExecutionCount
---------------+--------------+----------------------+---------------
- daily-report | 2026-09-13   | worker-a or worker-b |              1
+## Tests
+
+Run the integration suite with:
+
+```bash
+dotnet test
 ```
+
+The suite uses a real PostgreSQL Testcontainer and verifies:
+
+- `JobExecution` persistence and completion data;
+- duplicate execution by two independent unprotected jobs;
+- stable lock-key derivation;
+- advisory-lock exclusivity across independent sessions;
+- ownership-aware and explicit release;
+- automatic release when the owner session ends;
+- cleanup when protected work throws;
+- deterministic `Executed` and `Skipped` results for competing Workers;
+- one persisted execution during competition; and
+- later acquisition after release.
+
+Docker must be available for these integration tests.
+
+## Trade-offs
+
+Benefits include shared coordination without additional infrastructure,
+non-blocking acquisition, clear session ownership, and automatic cleanup when
+the owning PostgreSQL session terminates.
+
+The costs are a dependency on PostgreSQL availability, correctness coupled to
+connection lifetime, cooperative participation, deterministic lock-key design,
+one held database connection per active lock, and serialization of protected
+work. Mutual exclusion still does not provide exactly-once semantics.
+
+## When to Use
+
+Use this approach for small critical sections shared by cooperating application
+instances, such as a scheduled job triggered by multiple replicas, a maintenance
+operation that one replica should perform, or singleton-like background work in
+a replicated service—especially when PostgreSQL is already available.
+
+## When Not to Use
+
+Prefer a simpler mechanism when a database constraint or atomic update directly
+expresses the invariant, when the operation can naturally be idempotent, or when
+message-partition ownership already serializes the work. Avoid this approach when
+work must be queued rather than skipped, when high throughput would be harmed by
+serialization, or when the system needs stronger guarantees than cooperative
+session-level mutual exclusion.
+
+## Production Considerations
+
+Evaluate idempotency, lock granularity, deterministic lock-key design,
+PostgreSQL availability, connection-pool capacity, maximum protected-operation
+duration, acquisition-failure observability, database constraints for separate
+invariants, and failure boundaries around external side effects. Fencing tokens
+can matter in some lease-based distributed-lock designs; they are not implemented
+by this session-level advisory-lock example.
