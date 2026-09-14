@@ -50,6 +50,33 @@ public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
         Assert.Equal("worker-a", execution.WorkerInstance);
     }
 
+    [Fact]
+    public async Task ProtectedOperationFailureReleasesLockForAnotherParticipant()
+    {
+        var executionKey = $"failed-operation-window-{Guid.NewGuid():N}";
+        var failure = new InvalidOperationException("The protected operation failed.");
+        await using var dataSource = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await using var failingContext = fixture.CreateDbContext(
+            new FailingSaveInterceptor(failure));
+        var failingRunner = CreateRunner(
+            dataSource,
+            failingContext,
+            "worker-a",
+            executionKey);
+
+        var thrownException = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => failingRunner.TryExecuteAsync());
+
+        Assert.Same(failure, thrownException);
+
+        var participantB = new PostgresAdvisoryLock(dataSource);
+        var participantBOwnership = await participantB.TryAcquireAsync(
+            DailyReportJob.JobName,
+            executionKey);
+        Assert.NotNull(participantBOwnership);
+        await participantBOwnership.DisposeAsync();
+    }
+
     private static DailyReportJobRunner CreateRunner(
         NpgsqlDataSource dataSource,
         DistributedLockDbContext dbContext,
@@ -100,6 +127,18 @@ public sealed class DailyReportJobRunnerTests(PostgreSqlFixture fixture)
             }
 
             return result;
+        }
+    }
+
+    private sealed class FailingSaveInterceptor(InvalidOperationException failure)
+        : SaveChangesInterceptor
+    {
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            throw failure;
         }
     }
 }

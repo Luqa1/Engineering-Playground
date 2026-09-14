@@ -35,6 +35,16 @@ public sealed class DailyReportJobRunner(
         {
             return await job.ExecuteAsync(cancellationToken);
         }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Protected operation failed: {WorkerInstance} {JobName} {ExecutionKey}",
+                workerOptions.Instance,
+                DailyReportJob.JobName,
+                workerOptions.JobExecutionKey);
+            throw;
+        }
         finally
         {
             await lease.DisposeAsync();

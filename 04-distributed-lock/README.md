@@ -5,8 +5,9 @@ access to the same protected operation with a distributed lock.
 
 > **Work in Progress**
 >
-> M4 adds the core mutual-exclusion mechanism. Later milestones will focus on
-> failure semantics and the final documentation review.
+> M5 adds lock-ownership and session-lifetime failure semantics. Later
+> milestones will focus on the complete multi-instance walkthrough and final
+> documentation review.
 
 ## Problem
 
@@ -112,26 +113,91 @@ This conversion is deterministic across processes and runtime restarts.
 stable coordination contract. As with any fixed-size hash, a collision is
 theoretically possible.
 
-## Connection and Session Ownership
+## Lock Ownership and Session Lifetime
 
 > A session-level PostgreSQL advisory lock belongs to the database session that
 > acquired it.
 
 ```text
-lock ownership lifetime
-        =
-PostgreSQL session lifetime
+PostgreSQL session A
+        ↓
+acquires advisory lock
+        ↓
+session A owns lock
 ```
 
 `PostgresAdvisoryLock` opens a dedicated `NpgsqlConnection` for each acquisition.
 When acquisition succeeds, the connection remains open while `DailyReportJob`
-executes. The lease explicitly calls `pg_advisory_unlock` on that same connection
-in a `finally` cleanup path, then disposes the connection. A failed acquisition
-closes its connection immediately and never attempts an unlock.
+executes. Another physical PostgreSQL session cannot acquire the same lock and
+cannot release session A's lock:
+
+```text
+PostgreSQL session B
+        ↓
+tries the same advisory lock
+        ↓
+not granted
+```
+
+The ownership handle explicitly calls `pg_advisory_unlock` on the same connection
+in the runner's `finally` cleanup path, then disposes the connection. A failed
+acquisition closes its connection immediately and never attempts an unlock. The
+database session itself is the ownership identity; there is no application token
+or ownership table, and ownership cannot migrate to another connection.
+
+### Explicit and Automatic Release
+
+Explicit release is the normal application behavior:
+
+```text
+acquire
+  ↓
+work
+  ↓
+explicit unlock on the owning session
+  ↓
+close connection
+```
+
+If the process or connection disappears before cleanup, PostgreSQL session
+lifetime provides the safety net:
+
+```text
+acquire
+  ↓
+process / connection disappears
+  ↓
+PostgreSQL session ends
+  ↓
+lock automatically released
+  ↓
+another session may acquire it
+```
+
+This PoC does not use timer-based expiration, TTL, or renewal. Those concepts are
+common in Redis-style locks that use an ownership token plus TTL; PostgreSQL
+session-level advisory locks instead use database-session ownership.
+
+### Connection Pooling
+
+Session-level advisory locks require care with connection pooling. Returning a
+connection to its pool while it still owns a lock could transfer that live
+session, and therefore its lock state, to unrelated later work. The normal path
+always attempts the explicit unlock before disposing and returning the dedicated
+connection. The session-loss integration test disables pooling for its two test
+connections so disposing the owner deterministically terminates the physical
+PostgreSQL session rather than merely returning it to a pool.
 
 The ordinary EF Core `DbContext` connection lifecycle is not used as implicit
-lock ownership. M5 will examine abnormal termination and session-loss behavior;
-M4 establishes normal acquisition, mutual exclusion, and release.
+lock ownership.
+
+### Lock Release Is Not Job Success
+
+A successfully released lock means mutual exclusion ended; it does not mean the
+business operation completed successfully. If protected work throws, the runner
+logs the failure, attempts explicit unlock in its cleanup path, and lets the
+original business exception propagate. Any partial side effects still require a
+separate recovery or idempotency design, which is outside this PoC.
 
 ## Behavior and Limitations
 
@@ -140,9 +206,13 @@ The M4 guarantee is deliberately narrow:
 > Competing participating Worker instances cannot simultaneously enter the same
 > protected job execution while the advisory lock is held.
 
-This is not a claim of exactly-once execution. Advisory locks do not persist
-through a PostgreSQL restart, cannot protect clients that ignore the locking
-protocol, and do not replace database constraints or idempotent business logic.
+This is not a claim of exactly-once execution. Consider a process that performs
+an external side effect and then crashes before recording completion. Its session
+ends, PostgreSQL releases the lock, and another Worker may later repeat the side
+effect. Idempotency, transactional state, deduplication, Outbox/inbox patterns,
+or workflow state may address that broader problem; this PoC does not implement
+them. Advisory locks also do not persist through a PostgreSQL restart and cannot
+protect clients that ignore the locking protocol.
 
 The approach is useful when a small number of cooperating processes already use
 PostgreSQL and need mutual exclusion around a short logical operation. It is a
@@ -159,6 +229,10 @@ The integration suite uses a real PostgreSQL container and verifies:
 - participant B fails immediately on another session;
 - participant A executes the protected job and releases the lock;
 - participant B can acquire the same lock after release;
+- a non-owner session cannot release the owner's lock;
+- terminating a non-pooled owner session automatically releases its lock;
+- a protected-operation failure still executes normal lock cleanup and preserves
+  the business exception;
 - two orchestrated job runners persist one execution belonging to the lock owner.
 
 The job-level test pauses Worker A at its first database save only after A has

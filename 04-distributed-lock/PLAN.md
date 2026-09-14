@@ -12,7 +12,7 @@ The focus is:
 - shared coordination;
 - lock acquisition;
 - lock ownership;
-- lock expiration;
+- session-lifetime failure behavior;
 - safe release;
 - failure behavior.
 
@@ -140,31 +140,20 @@ Instance A releases lock
 
 ## M5 – Lock Expiration & Ownership
 
-Goal: Demonstrate that distributed locks require explicit ownership semantics and failure handling.
+Status: Complete.
 
-Cover the scenario where an instance acquires the lock but terminates or becomes unavailable before releasing it. The lock mechanism must avoid leaving the system permanently blocked.
+Goal: Demonstrate that distributed locks require explicit ownership semantics and failure handling. For the selected PostgreSQL advisory lock, the roadmap's "expiration" concern is handled by database session lifetime rather than a timer-based lease or TTL.
 
-Expected concepts:
+PostgreSQL session A owns the lock it acquires. Another session cannot acquire or release that lock while session A remains alive. Normal execution explicitly unlocks through session A before returning the connection to its pool. If session A ends before that cleanup, PostgreSQL automatically releases its session-level advisory locks.
+
+Implemented concepts:
 
 - lock ownership;
-- unique owner token or equivalent mechanism;
-- expiration, lease, or session semantics depending on the selected lock implementation;
-- safe release;
-- ensuring one instance cannot release another instance's lock.
-
-If Redis is selected:
-
-- use an ownership token;
-- use expiration;
-- release only when the stored token matches the owner;
-- do not implement unsafe `GET` followed by `DEL` as separate non-atomic operations.
-
-If PostgreSQL advisory locks are selected:
-
-- document their connection/session ownership semantics;
-- ensure the implementation correctly releases ownership when the session ends.
-
-Do not build a complete lease-renewal subsystem unless absolutely required for the chosen demonstration.
+- dedicated database-session ownership;
+- explicit release by the owning session;
+- automatic release on session termination;
+- deterministic coverage of owner retention, non-owner release, explicit release, session loss, and protected-operation failure;
+- no TTL, lease renewal, or separate ownership token.
 
 ## M6 – Multi-Instance Scenario
 
@@ -309,15 +298,12 @@ The final implementation must have clear ownership semantics. A process must not
 
 Do not use a release strategy that blindly removes shared lock state without verifying ownership.
 
-### Lock Expiration
+### Lock Owner Loss
 
-The final implementation must address what happens if the lock owner disappears before normal release.
+The final implementation must address what happens if the lock owner disappears before normal release. PostgreSQL session-level advisory locks use database-session lifetime rather than timer-based expiration:
 
-The exact mechanism depends on the selected implementation:
-
-- expiration or lease;
-- connection or session lifetime;
-- another provider-specific ownership mechanism.
+- normal execution explicitly unlocks through the owning session;
+- PostgreSQL automatically releases the lock when that session terminates.
 
 Do not leave this as an unexplained edge case.
 
