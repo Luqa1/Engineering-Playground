@@ -4,7 +4,7 @@ The roadmap tracks planned, independent Proofs of Concept. Each PoC will focus o
 
 ## Initial Roadmap
 
-1. Outbox Pattern
+1. [Outbox Pattern](01-outbox-pattern/) — **Status: Completed.**
 2. [Structured Logging & Observability](02-structured-logging/) — **Status: Completed.**
 3. [Optimistic Concurrency](03-optimistic-concurrency/) — **Status: Completed.**
 4. [Distributed Lock](04-distributed-lock/) — **Status: Completed.**
