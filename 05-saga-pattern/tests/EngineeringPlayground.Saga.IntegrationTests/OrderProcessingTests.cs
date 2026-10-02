@@ -13,7 +13,8 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         .Build();
     private ServiceProvider services = null!;
     private IDbContextFactory<OrderDbContext> factory = null!;
-    private OrderProcessor processor = null!;
+    private OrderSaga saga = null!;
+    private OrderOperations operations = null!;
 
     public async Task InitializeAsync()
     {
@@ -23,7 +24,8 @@ public sealed class OrderProcessingTests : IAsyncLifetime
             .AddOrderProcessing(postgres.GetConnectionString())
             .BuildServiceProvider();
         factory = services.GetRequiredService<IDbContextFactory<OrderDbContext>>();
-        processor = services.GetRequiredService<OrderProcessor>();
+        saga = services.GetRequiredService<OrderSaga>();
+        operations = services.GetRequiredService<OrderOperations>();
         await using var db = await factory.CreateDbContextAsync();
         await db.Database.MigrateAsync();
     }
@@ -35,9 +37,9 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Successful_workflow_persists_completed_order_reserved_inventory_and_payment()
+    public async Task Successful_saga_persists_completed_order_reserved_inventory_and_payment()
     {
-        var id = await processor.ProcessAsync(InventoryItem.DemoId, 1, 100m);
+        var id = await saga.ProcessAsync(InventoryItem.DemoId, 1, 100m);
 
         await using var db = await factory.CreateDbContextAsync();
         var order = await db.Orders.SingleAsync(x => x.Id == id);
@@ -51,9 +53,9 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Payment_failure_leaves_pending_order_and_committed_inventory_reservation()
+    public async Task Payment_failure_stops_saga_and_leaves_pending_order_and_committed_inventory_reservation()
     {
-        var id = await processor.ProcessAsync(InventoryItem.DemoId, 1, 100m, PaymentMode.Fail);
+        var id = await saga.ProcessAsync(InventoryItem.DemoId, 1, 100m, PaymentMode.Fail);
 
         await using var db = await factory.CreateDbContextAsync();
         var order = await db.Orders.SingleAsync(x => x.Id == id);
@@ -69,7 +71,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     [Fact]
     public async Task Every_operation_is_visible_from_a_fresh_context_before_the_next_operation()
     {
-        var id = await processor.CreateOrderAsync();
+        var id = await operations.CreateOrderAsync();
         await using (var db = await factory.CreateDbContextAsync())
         {
             Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync(x => x.Id == id)).Status);
@@ -77,7 +79,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
             Assert.Equal(10, (await db.InventoryItems.SingleAsync()).AvailableQuantity);
         }
 
-        await processor.ReserveInventoryAsync(id, InventoryItem.DemoId, 1);
+        await operations.ReserveInventoryAsync(id, InventoryItem.DemoId, 1);
         await using (var db = await factory.CreateDbContextAsync())
         {
             var inventory = await db.InventoryItems.SingleAsync();
@@ -87,14 +89,14 @@ public sealed class OrderProcessingTests : IAsyncLifetime
             Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync()).Status);
         }
 
-        await processor.ProcessPaymentAsync(id, 100m);
+        await operations.ProcessPaymentAsync(id, 100m);
         await using (var db = await factory.CreateDbContextAsync())
         {
             Assert.Equal(PaymentStatus.Succeeded, (await db.Payments.SingleAsync(x => x.OrderId == id)).Status);
             Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync()).Status);
         }
 
-        await processor.CompleteOrderAsync(id);
+        await operations.CompleteOrderAsync(id);
         await using (var db = await factory.CreateDbContextAsync())
         {
             Assert.Equal(OrderStatus.Completed, (await db.Orders.SingleAsync()).Status);

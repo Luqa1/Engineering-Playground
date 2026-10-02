@@ -229,6 +229,8 @@ The milestone should finish with deliberately inconsistent/incomplete business s
 
 # M4 – Saga Orchestration
 
+Status: **Completed**.
+
 Goal:
 
 Introduce explicit orchestration for the multi-step order process.

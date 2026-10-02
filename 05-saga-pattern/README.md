@@ -1,8 +1,8 @@
 # Saga Pattern
 
-> **Work in Progress** — M3 Partial Failure Scenario is complete. [Implementation plan](PLAN.md).
+> **Work in Progress** — M4 Saga Orchestration is complete. [Implementation plan](PLAN.md).
 >
-> Saga orchestration and compensating actions are intentionally not implemented yet.
+> An explicit Saga now coordinates the workflow. Compensating actions are intentionally not implemented yet.
 
 ## Scenario and motivation
 
@@ -12,7 +12,7 @@ The minimal domain contains `Order` (Id, Pending/Completed status, CreatedAtUtc)
 
 ## Implementation and transaction boundaries
 
-The controller delegates to `OrderProcessor` in Infrastructure. Domain entities contain the small business behaviors. EF configuration and DbContext live in Infrastructure; Domain has no project dependencies. API references Domain and Infrastructure. There is no Application project.
+The controller delegates to `OrderSaga` in Infrastructure. The Saga coordinates `OrderOperations`, which owns the four independently committed persistence operations. Domain entities contain the small business behaviors. EF configuration and DbContext live in Infrastructure; Domain has no project dependencies. API references Domain and Infrastructure. There is no Application project.
 
 Each of the four explicit operations creates and disposes its own DbContext and local database transaction. It awaits SaveChanges and COMMIT before returning. There is no outer transaction:
 
@@ -25,7 +25,7 @@ Using one PostgreSQL instance does not make the workflow atomic. The default pay
 ```mermaid
 flowchart TD
     HTTP[HTTP request] --> Controller[ASP.NET Core Controllers]
-    Controller --> Processor[OrderProcessor]
+    Controller --> Processor[OrderSaga]
     Processor --> Operations[Create order / Reserve inventory / Process payment / Complete order]
     Operations --> DB[(PostgreSQL: independently committed operations)]
 ```
@@ -34,7 +34,7 @@ flowchart TD
 sequenceDiagram
     participant Client
     participant API as OrdersController
-    participant Processor as OrderProcessor
+    participant Processor as OrderSaga
     participant DB as PostgreSQL
     Client->>API: POST /orders
     API->>Processor: ProcessAsync
@@ -100,7 +100,7 @@ dotnet test
 docker compose config
 ```
 
-Tests require a running Docker daemon. Testcontainers starts a separate PostgreSQL container with a dynamically allocated port for each test and waits for readiness. Migrations provide known inventory state. No local database reset or existing Compose environment is required. Tests inspect persisted state using fresh DbContexts: one covers the completed workflow; one proves partial failure leaves inventory reserved and the order Pending; the other checks committed state after every operation before the next one begins. Containers are disposed after each test.
+Tests require a running Docker daemon. Testcontainers starts a separate PostgreSQL container with a dynamically allocated port for each test and waits for readiness. Migrations provide known inventory state. No local database reset or existing Compose environment is required. Tests inspect persisted state using fresh DbContexts: one invokes the production Saga entry path and covers the completed workflow; one invokes the same Saga with deterministic payment failure and proves partial failure leaves inventory reserved and the order Pending; the other checks committed state after every operation before the next one begins. Containers are disposed after each test.
 
 For host development, start Compose PostgreSQL and run the API with the Development profile. Its development connection string matches Compose defaults; override ConnectionStrings__Orders when changing database settings.
 
@@ -132,7 +132,7 @@ From a clean database, failure alone leaves available inventory at 9 and reserve
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Processor as OrderProcessor
+    participant Processor as OrderSaga
     participant DB as PostgreSQL
     Client->>Processor: POST /orders (paymentMode: Fail)
     Processor->>DB: BEGIN / INSERT Pending order / COMMIT
@@ -143,10 +143,32 @@ sequenceDiagram
     Client->>DB: Fresh reads: Pending order, reserved inventory, Failed payment
 ```
 
-Order creation commits first, inventory reservation commits next, and only then does simulated payment fail. The failed outcome is recorded in its own committed transaction; this demo does not cause a database error or payment transaction rollback. Logs show Order created, Inventory reserved, Payment failed, and Order processing stopped with identifiers.
+Order creation commits first, inventory reservation commits next, and only then does simulated payment fail. The failed outcome is recorded in its own committed transaction; this demo does not cause a database error or payment transaction rollback. Logs show Order created, Inventory reserved, Payment failed, and Order Saga stopped with identifiers.
 
 A database rollback affects only the transaction being rolled back. If transaction A reserves inventory and commits, a failure or rollback in payment transaction B cannot retroactively undo A. The payment failure cannot roll back the already committed inventory transaction, leaving a partial business state.
 
 The PoC intentionally preserves independent commit boundaries instead of wrapping all steps in one large transaction. In a distributed workflow these operations might belong to separate services, databases, or external providers. One PostgreSQL instance keeps this example small while exposing the same boundary problem.
 
-M3 intentionally leaves the system incomplete. The next milestones introduce Saga orchestration and compensating actions. There is no cancellation, inventory release, retry, or automatic cleanup here. Adding the Failed enum value requires no migration: payment status already uses an unconstrained string column, and its schema and EF model mapping remain unchanged.
+M4 intentionally leaves the system incomplete. M5 introduces compensating actions. There is no cancellation, inventory release, retry, or automatic cleanup here. Adding the Failed enum value requires no migration: payment status already uses an unconstrained string column, and its schema and EF model mapping remain unchanged.
+
+## Saga Orchestration
+
+Before M4, sequential application logic in `OrderProcessor` owned the entire workflow. Now `OrderSaga` explicitly owns process progression: which step runs next, and what happens when payment fails. `OrderOperations` contains only the local database operations; there is exactly one process coordinator, with no outer transaction or persisted Saga state.
+
+```text
+Controller → OrderSaga
+               ├── Create Order (COMMIT)
+               ├── Reserve Inventory (COMMIT)
+               ├── Process Payment (COMMIT)
+               └── Payment succeeded? Complete Order (COMMIT) : Stop
+```
+
+Introducing a Saga orchestrator does not automatically undo previously committed work.
+
+```text
+Reserve Inventory → COMMIT → Payment fails → Saga stops → Inventory is still reserved
+```
+
+The successful invocation leaves a Completed order, Succeeded payment, and persisted reservation. The failed invocation leaves a Pending order, Failed payment, and persisted reservation. Expected payment failure is a business result; unexpected infrastructure failures propagate as exceptions. Cancellation tokens pass through every step; cancellation does not compensate committed work.
+
+This PoC uses orchestration because one explicit coordinator makes step order, decisions, failure flow, and future compensation easy to observe. M5 will replace the payment-failure stop with explicit compensation. There is no choreography or messaging infrastructure.

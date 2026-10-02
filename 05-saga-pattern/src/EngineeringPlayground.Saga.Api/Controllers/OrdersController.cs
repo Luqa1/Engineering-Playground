@@ -15,17 +15,17 @@ public sealed record OrderResponse(Guid OrderId, string OrderStatus, string? Pay
 [Route("orders")]
 public sealed class OrdersController : ControllerBase
 {
-    private readonly OrderProcessor processor;
+    private readonly OrderSaga saga;
     private readonly IDbContextFactory<OrderDbContext> contextFactory;
-    public OrdersController(OrderProcessor processor, IDbContextFactory<OrderDbContext> contextFactory)
+    public OrdersController(OrderSaga saga, IDbContextFactory<OrderDbContext> contextFactory)
     {
-        this.processor = processor;
+        this.saga = saga;
         this.contextFactory = contextFactory;
     }
     [HttpPost]
     public async Task<ActionResult<OrderResponse>> Create(CreateOrderRequest request, CancellationToken cancellationToken)
     {
-        var id = await processor.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, Enum.Parse<PaymentMode>(request.PaymentMode), cancellationToken);
+        var id = await saga.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, Enum.Parse<PaymentMode>(request.PaymentMode), cancellationToken);
         var response = await ReadAsync(id, cancellationToken);
         if (response?.PaymentStatus == PaymentStatus.Failed.ToString())
             return UnprocessableEntity(response);

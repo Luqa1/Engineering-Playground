@@ -3,30 +3,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 namespace EngineeringPlayground.Saga.Infrastructure;
 
-public sealed class OrderProcessor
+public sealed class OrderOperations
 {
     private readonly IDbContextFactory<OrderDbContext> contextFactory;
-    private readonly ILogger<OrderProcessor> logger;
-    public OrderProcessor(IDbContextFactory<OrderDbContext> contextFactory, ILogger<OrderProcessor> logger)
+    private readonly ILogger<OrderOperations> logger;
+    public OrderOperations(IDbContextFactory<OrderDbContext> contextFactory, ILogger<OrderOperations> logger)
     {
         this.contextFactory = contextFactory;
         this.logger = logger;
-    }
-    public async Task<Guid> ProcessAsync(Guid inventoryItemId, int quantity, decimal amount, PaymentMode paymentMode = PaymentMode.Succeed, CancellationToken cancellationToken = default)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amount);
-        if (!Enum.IsDefined(paymentMode)) throw new ArgumentOutOfRangeException(nameof(paymentMode));
-        var orderId = await CreateOrderAsync(cancellationToken);
-        await ReserveInventoryAsync(orderId, inventoryItemId, quantity, cancellationToken);
-        var paymentStatus = await ProcessPaymentAsync(orderId, amount, paymentMode, cancellationToken);
-        if (paymentStatus == PaymentStatus.Failed)
-        {
-            logger.LogInformation("Order processing stopped after payment failure {OrderId}", orderId);
-            return orderId;
-        }
-        await CompleteOrderAsync(orderId, cancellationToken);
-        return orderId;
     }
     // Each operation owns a fresh context and local transaction. There is no outer transaction.
     public async Task<Guid> CreateOrderAsync(CancellationToken cancellationToken = default)
