@@ -187,6 +187,8 @@ Avoid generic workflow abstractions.
 
 # M3 – Partial Failure Scenario
 
+Status: **Completed**.
+
 Goal:
 
 Demonstrate the problem before implementing the Saga solution.

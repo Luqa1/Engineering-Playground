@@ -51,6 +51,22 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Payment_failure_leaves_pending_order_and_committed_inventory_reservation()
+    {
+        var id = await processor.ProcessAsync(InventoryItem.DemoId, 1, 100m, PaymentMode.Fail);
+
+        await using var db = await factory.CreateDbContextAsync();
+        var order = await db.Orders.SingleAsync(x => x.Id == id);
+        var inventory = await db.InventoryItems.SingleAsync(x => x.Id == InventoryItem.DemoId);
+        var payment = await db.Payments.SingleAsync(x => x.OrderId == id);
+        Assert.Equal(OrderStatus.Pending, order.Status);
+        Assert.Equal(9, inventory.AvailableQuantity);
+        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Equal(100m, payment.Amount);
+    }
+
+    [Fact]
     public async Task Every_operation_is_visible_from_a_fresh_context_before_the_next_operation()
     {
         var id = await processor.CreateOrderAsync();

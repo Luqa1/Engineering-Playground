@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using EngineeringPlayground.Saga.Infrastructure;
+using EngineeringPlayground.Saga.Domain;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 namespace EngineeringPlayground.Saga.Api.Controllers;
@@ -7,7 +8,8 @@ namespace EngineeringPlayground.Saga.Api.Controllers;
 public sealed record CreateOrderRequest(
     Guid InventoryItemId,
     [Range(1, int.MaxValue)] int Quantity,
-    [Range(typeof(decimal), "0.01", "9999999999999999.99")] decimal Amount);
+    [Range(typeof(decimal), "0.01", "9999999999999999.99")] decimal Amount,
+    [Required, RegularExpression("^(Succeed|Fail)$")] string PaymentMode = "Succeed");
 public sealed record OrderResponse(Guid OrderId, string OrderStatus, string? PaymentStatus);
 [ApiController]
 [Route("orders")]
@@ -23,8 +25,10 @@ public sealed class OrdersController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<OrderResponse>> Create(CreateOrderRequest request, CancellationToken cancellationToken)
     {
-        var id = await processor.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, cancellationToken);
+        var id = await processor.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, Enum.Parse<PaymentMode>(request.PaymentMode), cancellationToken);
         var response = await ReadAsync(id, cancellationToken);
+        if (response?.PaymentStatus == PaymentStatus.Failed.ToString())
+            return UnprocessableEntity(response);
         return CreatedAtAction(nameof(Get), new { id }, response);
     }
     [HttpGet("{id:guid}")]

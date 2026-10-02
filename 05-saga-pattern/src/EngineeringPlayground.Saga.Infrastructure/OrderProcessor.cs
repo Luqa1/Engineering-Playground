@@ -12,13 +12,19 @@ public sealed class OrderProcessor
         this.contextFactory = contextFactory;
         this.logger = logger;
     }
-    public async Task<Guid> ProcessAsync(Guid inventoryItemId, int quantity, decimal amount, CancellationToken cancellationToken = default)
+    public async Task<Guid> ProcessAsync(Guid inventoryItemId, int quantity, decimal amount, PaymentMode paymentMode = PaymentMode.Succeed, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amount);
+        if (!Enum.IsDefined(paymentMode)) throw new ArgumentOutOfRangeException(nameof(paymentMode));
         var orderId = await CreateOrderAsync(cancellationToken);
         await ReserveInventoryAsync(orderId, inventoryItemId, quantity, cancellationToken);
-        await ProcessPaymentAsync(orderId, amount, cancellationToken);
+        var paymentStatus = await ProcessPaymentAsync(orderId, amount, paymentMode, cancellationToken);
+        if (paymentStatus == PaymentStatus.Failed)
+        {
+            logger.LogInformation("Order processing stopped after payment failure {OrderId}", orderId);
+            return orderId;
+        }
         await CompleteOrderAsync(orderId, cancellationToken);
         return orderId;
     }
@@ -44,15 +50,19 @@ public sealed class OrderProcessor
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation("Inventory reserved {InventoryItemId} for order {OrderId}", inventoryItemId, orderId);
     }
-    public async Task ProcessPaymentAsync(Guid orderId, decimal amount, CancellationToken cancellationToken = default)
+    public async Task<PaymentStatus> ProcessPaymentAsync(Guid orderId, decimal amount, PaymentMode paymentMode = PaymentMode.Succeed, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var payment = new Payment(orderId, amount);
+        var payment = new Payment(orderId, amount, paymentMode);
         db.Payments.Add(payment);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        logger.LogInformation("Payment succeeded {PaymentId} for order {OrderId}", payment.Id, orderId);
+        if (payment.Status == PaymentStatus.Failed)
+            logger.LogInformation("Payment failed {PaymentId} for order {OrderId}", payment.Id, orderId);
+        else
+            logger.LogInformation("Payment succeeded {PaymentId} for order {OrderId}", payment.Id, orderId);
+        return payment.Status;
     }
     public async Task CompleteOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
