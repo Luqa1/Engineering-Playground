@@ -9,6 +9,7 @@ public static class DependencyInjection
         services.AddDbContextFactory<OrderDbContext>(options => options.UseNpgsql(connectionString));
         services.AddScoped<OrderOperations>();
         services.AddScoped<OrderSaga>();
+        services.AddScoped<OrderSagaStateService>();
         return services;
     }
 }

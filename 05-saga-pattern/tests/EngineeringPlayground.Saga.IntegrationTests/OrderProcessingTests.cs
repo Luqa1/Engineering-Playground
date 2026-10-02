@@ -45,6 +45,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         var order = await db.Orders.SingleAsync(x => x.Id == id);
         var inventory = await db.InventoryItems.SingleAsync(x => x.Id == InventoryItem.DemoId);
         var payment = await db.Payments.SingleAsync(x => x.OrderId == id);
+        Assert.Equal(OrderSagaStatus.Completed, (await db.OrderSagaStates.SingleAsync(x => x.OrderId == id)).Status);
         Assert.Equal(OrderStatus.Completed, order.Status);
         Assert.Equal(9, inventory.AvailableQuantity);
         Assert.Equal(1, inventory.ReservedQuantity);
@@ -61,11 +62,52 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         var order = await db.Orders.SingleAsync(x => x.Id == id);
         var inventory = await db.InventoryItems.SingleAsync(x => x.Id == InventoryItem.DemoId);
         var payment = await db.Payments.SingleAsync(x => x.OrderId == id);
+        Assert.Equal(OrderSagaStatus.Compensated, (await db.OrderSagaStates.SingleAsync(x => x.OrderId == id)).Status);
         Assert.Equal(OrderStatus.Cancelled, order.Status);
         Assert.Equal(10, inventory.AvailableQuantity);
         Assert.Equal(0, inventory.ReservedQuantity);
         Assert.Equal(PaymentStatus.Failed, payment.Status);
         Assert.Equal(100m, payment.Amount);
+    }
+
+    [Fact]
+    public async Task Compensation_failure_persists_unresolved_saga_and_keeps_committed_reservation()
+    {
+        var id = await saga.ProcessAsync(InventoryItem.DemoId, 2, 100m, PaymentMode.Fail,
+            inventoryReleaseMode: InventoryReleaseMode.Fail);
+
+        await using var db = await factory.CreateDbContextAsync();
+        var state = await db.OrderSagaStates.SingleAsync(x => x.OrderId == id);
+        Assert.Equal(OrderSagaStatus.CompensationFailed, state.Status);
+        Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync(x => x.Id == id)).Status);
+        Assert.Equal(PaymentStatus.Failed, (await db.Payments.SingleAsync(x => x.OrderId == id)).Status);
+        var inventory = await db.InventoryItems.SingleAsync();
+        Assert.Equal(8, inventory.AvailableQuantity);
+        Assert.Equal(2, inventory.ReservedQuantity);
+        Assert.True(state.UpdatedAtUtc >= state.CreatedAtUtc);
+    }
+
+    [Fact]
+    public async Task Release_refusal_occurs_after_committed_compensating_state_and_preserves_stock()
+    {
+        var id = await operations.CreateOrderAsync();
+        var states = services.GetRequiredService<OrderSagaStateService>();
+        var state = await states.StartAsync(id, default);
+        await operations.ReserveInventoryAsync(id, InventoryItem.DemoId, 1);
+        await operations.ProcessPaymentAsync(id, 100m, PaymentMode.Fail);
+        state.BeginCompensation();
+        await states.SaveAsync(state, default);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            Assert.Equal(OrderSagaStatus.Compensating, (await db.OrderSagaStates.SingleAsync()).Status);
+            Assert.Equal(1, (await db.InventoryItems.SingleAsync()).ReservedQuantity);
+            Assert.Equal(PaymentStatus.Failed, (await db.Payments.SingleAsync()).Status);
+        }
+        Assert.False(await operations.ReleaseInventoryAsync(id, InventoryItem.DemoId, 1,
+            releaseMode: InventoryReleaseMode.Fail));
+        await using var final = await factory.CreateDbContextAsync();
+        Assert.Equal(1, (await final.InventoryItems.SingleAsync()).ReservedQuantity);
+        Assert.Equal(OrderStatus.Pending, (await final.Orders.SingleAsync()).Status);
     }
 
     [Fact]

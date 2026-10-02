@@ -49,15 +49,19 @@ public sealed class OrderOperations
         return payment.Status;
     }
     // Compensation is a new committed business operation, not rollback of the reservation.
-    public async Task ReleaseInventoryAsync(Guid orderId, Guid inventoryItemId, int quantity, CancellationToken cancellationToken = default)
+    public async Task<bool> ReleaseInventoryAsync(Guid orderId, Guid inventoryItemId, int quantity, CancellationToken cancellationToken = default, InventoryReleaseMode releaseMode = InventoryReleaseMode.Succeed)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var item = await db.InventoryItems.SingleAsync(x => x.Id == inventoryItemId, cancellationToken);
+        if (!Enum.IsDefined(releaseMode)) throw new ArgumentOutOfRangeException(nameof(releaseMode));
+        // Expected demo refusal occurs inside the compensation operation, before any stock mutation.
+        if (releaseMode == InventoryReleaseMode.Fail) return false;
         item.Release(quantity);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         logger.LogInformation("Inventory released {InventoryItemId} for order {OrderId}", inventoryItemId, orderId);
+        return true;
     }
     public async Task CancelOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
     {

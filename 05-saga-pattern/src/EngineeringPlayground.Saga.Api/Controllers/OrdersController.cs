@@ -9,8 +9,9 @@ public sealed record CreateOrderRequest(
     Guid InventoryItemId,
     [Range(1, int.MaxValue)] int Quantity,
     [Range(typeof(decimal), "0.01", "9999999999999999.99")] decimal Amount,
-    [Required, RegularExpression("^(Succeed|Fail)$")] string PaymentMode = "Succeed");
-public sealed record OrderResponse(Guid OrderId, string OrderStatus, string? PaymentStatus);
+    [Required, RegularExpression("^(Succeed|Fail)$")] string PaymentMode = "Succeed",
+    [Required, RegularExpression("^(Succeed|Fail)$")] string InventoryReleaseMode = "Succeed");
+public sealed record OrderResponse(Guid OrderId, string OrderStatus, string? PaymentStatus, string? SagaStatus);
 [ApiController]
 [Route("orders")]
 public sealed class OrdersController : ControllerBase
@@ -25,7 +26,7 @@ public sealed class OrdersController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<OrderResponse>> Create(CreateOrderRequest request, CancellationToken cancellationToken)
     {
-        var id = await saga.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, Enum.Parse<PaymentMode>(request.PaymentMode), cancellationToken);
+        var id = await saga.ProcessAsync(request.InventoryItemId, request.Quantity, request.Amount, Enum.Parse<PaymentMode>(request.PaymentMode), cancellationToken, Enum.Parse<InventoryReleaseMode>(request.InventoryReleaseMode));
         var response = await ReadAsync(id, cancellationToken);
         if (response?.PaymentStatus == PaymentStatus.Failed.ToString())
             return UnprocessableEntity(response);
@@ -43,6 +44,7 @@ public sealed class OrdersController : ControllerBase
         var order = await db.Orders.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (order is null) return null;
         var payment = await db.Payments.AsNoTracking().SingleOrDefaultAsync(x => x.OrderId == id, cancellationToken);
-        return new OrderResponse(order.Id, order.Status.ToString(), payment?.Status.ToString());
+        var state = await db.OrderSagaStates.AsNoTracking().SingleOrDefaultAsync(x => x.OrderId == id, cancellationToken);
+        return new OrderResponse(order.Id, order.Status.ToString(), payment?.Status.ToString(), state?.Status.ToString());
     }
 }

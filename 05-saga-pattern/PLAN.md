@@ -319,6 +319,8 @@ Do not hide it behind generic framework behavior.
 
 # M6 – Saga State & Compensation Failure
 
+Status: **Completed**.
+
 Goal:
 
 Demonstrate that compensating actions can also fail.

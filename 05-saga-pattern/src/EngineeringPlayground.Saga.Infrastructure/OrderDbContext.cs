@@ -4,6 +4,7 @@ namespace EngineeringPlayground.Saga.Infrastructure;
 
 public sealed class OrderDbContext(DbContextOptions<OrderDbContext> options) : DbContext(options)
 {
+    public DbSet<OrderSagaState> OrderSagaStates => Set<OrderSagaState>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<InventoryItem> InventoryItems => Set<InventoryItem>();
     public DbSet<Payment> Payments => Set<Payment>();

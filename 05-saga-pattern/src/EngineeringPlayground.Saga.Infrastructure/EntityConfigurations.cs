@@ -33,3 +33,13 @@ public sealed class PaymentConfiguration : IEntityTypeConfiguration<Payment>
         builder.HasOne<Order>().WithOne().HasForeignKey<Payment>(x => x.OrderId);
     }
 }
+public sealed class OrderSagaStateConfiguration : IEntityTypeConfiguration<OrderSagaState>
+{
+    public void Configure(EntityTypeBuilder<OrderSagaState> builder)
+    {
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(20);
+        builder.HasIndex(x => x.OrderId).IsUnique();
+        builder.HasOne<Order>().WithOne().HasForeignKey<OrderSagaState>(x => x.OrderId);
+    }
+}
