@@ -149,6 +149,8 @@ No application implementation.
 
 # M2 – Running Application
 
+Status: **Completed**.
+
 Goal:
 
 Create the smallest runnable .NET 10 application required for the order-processing scenario.
