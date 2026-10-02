@@ -14,3 +14,6 @@ if (!app.Environment.IsProduction())
 }
 app.MapControllers();
 app.Run();
+
+// Expose the application entry point to HTTP integration tests.
+public partial class Program { }

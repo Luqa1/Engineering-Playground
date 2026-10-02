@@ -367,6 +367,8 @@ The failure must remain observable.
 
 # M7 – End-to-End Scenarios
 
+Status: **Completed**.
+
 Goal:
 
 Demonstrate the complete Saga behavior through deterministic integration scenarios.

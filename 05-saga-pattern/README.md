@@ -104,7 +104,7 @@ dotnet test
 docker compose config
 ```
 
-Tests require a running Docker daemon. Testcontainers starts a separate PostgreSQL container with a dynamically allocated port for each test and waits for readiness. Migrations provide known inventory state. No local database reset or existing Compose environment is required. Tests inspect persisted state using fresh DbContexts: one invokes the production Saga entry path and covers the completed workflow; one invokes the same Saga with deterministic payment failure and proves compensation restores inventory and cancels the order; another proves reservation, release, and cancellation are separately visible commits; the successful operation-boundary test remains. Containers are disposed after each test.
+Tests require a running Docker daemon. Testcontainers starts an isolated PostgreSQL container for every test; migrations seed 10 available units and zero reserved units. Three primary tests send HTTP requests through the real API and verify final state using fresh DbContexts, including exactly one Saga state per order. They also read the outcome through GET /orders/{id}. Three focused tests retain coverage of independent forward commits, committed compensation operations, and release refusal after committed Compensating state. Containers are disposed after each test.
 
 For host development, start Compose PostgreSQL and run the API with the Development profile. Its development connection string matches Compose defaults; override ConnectionStrings__Orders when changing database settings.
 
@@ -260,3 +260,36 @@ The reservation already committed. The failed release is a new compensating busi
 PostgreSQL-backed tests cover Completed, Compensated and CompensationFailed using fresh contexts after processing returns. A focused operation test observes committed Compensating state before the real release refusal and verifies unchanged stock. Existing independent-business-commit tests remain.
 
 Production could use compensation retries, delayed backoff, manual intervention, operator tooling and idempotent compensating operations. The appropriate choice depends on business requirements. M6 implements none of these: there is no startup scan, worker, retry or resume endpoint. Topology remains postgres and api.
+
+## End-to-End Scenarios
+
+M7 verifies the complete HTTP → Controller → OrderSaga → EF Core → PostgreSQL path. The PoC remains **Work in Progress**; M8 documentation is pending.
+
+Each row below assumes a fresh database with 10 available units and zero reserved units, and requests one unit:
+
+| Scenario | Request selectors | HTTP | Order | Payment | Saga | Available / reserved |
+| --- | --- | --- | --- | --- | --- | --- |
+| Success | Defaults | 201 | Completed | Succeeded | Completed | 9 / 1 |
+| Payment failure, compensation succeeds | `paymentMode: Fail` | 422 | Cancelled | Failed | Compensated | 10 / 0 |
+| Compensation failure | Both selectors `Fail` | 422 | Pending | Failed | CompensationFailed | 9 / 1 |
+
+```bash
+# Success
+curl -i -X POST http://localhost:8085/orders \
+  -H "Content-Type: application/json" \
+  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100}'
+
+# Payment failure with successful compensation
+curl -i -X POST http://localhost:8085/orders \
+  -H "Content-Type: application/json" \
+  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail"}'
+
+# Payment failure followed by refused inventory release
+curl -i -X POST http://localhost:8085/orders \
+  -H "Content-Type: application/json" \
+  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail","inventoryReleaseMode":"Fail"}'
+```
+
+Use each response's `orderId` with `GET /orders/{orderId}` and inspect stock with `GET /inventory/11111111-1111-1111-1111-111111111111`. Repeat the reads after compensation failure: Pending / Failed / CompensationFailed and the reservation remain durable and intentionally unresolved. No automatic recovery runs.
+
+If these requests run sequentially after one clean startup, inventory totals are respectively 9 / 1, 9 / 1, and 8 / 2. Successful compensation restores only that request's reservation. The focused commit-boundary tests prove that reservation is already durable before failed payment, and release and cancellation are new committed business operations.

@@ -1,3 +1,8 @@
+using System.Net;
+using System.Net.Http.Json;
+using EngineeringPlayground.Saga.Api.Controllers;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using EngineeringPlayground.Saga.Domain;
 using EngineeringPlayground.Saga.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -13,7 +18,8 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         .Build();
     private ServiceProvider services = null!;
     private IDbContextFactory<OrderDbContext> factory = null!;
-    private OrderSaga saga = null!;
+    private WebApplicationFactory<Program> application = null!;
+    private HttpClient client = null!;
     private OrderOperations operations = null!;
 
     public async Task InitializeAsync()
@@ -24,22 +30,29 @@ public sealed class OrderProcessingTests : IAsyncLifetime
             .AddOrderProcessing(postgres.GetConnectionString())
             .BuildServiceProvider();
         factory = services.GetRequiredService<IDbContextFactory<OrderDbContext>>();
-        saga = services.GetRequiredService<OrderSaga>();
+
         operations = services.GetRequiredService<OrderOperations>();
         await using var db = await factory.CreateDbContextAsync();
         await db.Database.MigrateAsync();
+        application = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Development")
+                .UseSetting("ConnectionStrings:Orders", postgres.GetConnectionString()));
+        client = application.CreateClient();
     }
 
     public async Task DisposeAsync()
     {
+        client?.Dispose();
+        if (application is not null) await application.DisposeAsync();
         if (services is not null) await services.DisposeAsync();
         await postgres.DisposeAsync();
     }
 
     [Fact]
-    public async Task Successful_saga_persists_completed_order_reserved_inventory_and_payment()
+    public async Task Successful_processing_completes_order_and_saga()
     {
-        var id = await saga.ProcessAsync(InventoryItem.DemoId, 1, 100m);
+        var id = await ProcessThroughHttpAsync(new CreateOrderRequest(InventoryItem.DemoId, 1, 100m),
+            HttpStatusCode.Created, "Completed", "Succeeded", "Completed");
 
         await using var db = await factory.CreateDbContextAsync();
         var order = await db.Orders.SingleAsync(x => x.Id == id);
@@ -54,9 +67,10 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Payment_failure_compensates_saga_and_persists_cancelled_order_and_restored_inventory()
+    public async Task Payment_failure_compensates_inventory_and_cancels_order()
     {
-        var id = await saga.ProcessAsync(InventoryItem.DemoId, 1, 100m, PaymentMode.Fail);
+        var id = await ProcessThroughHttpAsync(new CreateOrderRequest(InventoryItem.DemoId, 1, 100m, "Fail"),
+            HttpStatusCode.UnprocessableEntity, "Cancelled", "Failed", "Compensated");
 
         await using var db = await factory.CreateDbContextAsync();
         var order = await db.Orders.SingleAsync(x => x.Id == id);
@@ -71,10 +85,10 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Compensation_failure_persists_unresolved_saga_and_keeps_committed_reservation()
+    public async Task Compensation_failure_leaves_saga_unresolved()
     {
-        var id = await saga.ProcessAsync(InventoryItem.DemoId, 2, 100m, PaymentMode.Fail,
-            inventoryReleaseMode: InventoryReleaseMode.Fail);
+        var id = await ProcessThroughHttpAsync(new CreateOrderRequest(InventoryItem.DemoId, 2, 100m, "Fail", "Fail"),
+            HttpStatusCode.UnprocessableEntity, "Pending", "Failed", "CompensationFailed");
 
         await using var db = await factory.CreateDbContextAsync();
         var state = await db.OrderSagaStates.SingleAsync(x => x.OrderId == id);
@@ -178,5 +192,33 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         {
             Assert.Equal(OrderStatus.Completed, (await db.Orders.SingleAsync()).Status);
         }
+    }
+    private async Task<Guid> ProcessThroughHttpAsync(CreateOrderRequest request, HttpStatusCode expectedStatus,
+        string orderStatus, string paymentStatus, string sagaStatus)
+    {
+        // Each test owns a migrated PostgreSQL container with known stock, independent of test order.
+        await using (var initial = await factory.CreateDbContextAsync())
+        {
+            var inventory = await initial.InventoryItems.SingleAsync(x => x.Id == InventoryItem.DemoId);
+            Assert.Equal(10, inventory.AvailableQuantity);
+            Assert.Equal(0, inventory.ReservedQuantity);
+        }
+
+        using var response = await client.PostAsJsonAsync("/orders", request);
+        Assert.True(response.StatusCode == expectedStatus,
+            $"Expected {expectedStatus}, received {response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        var result = await response.Content.ReadFromJsonAsync<OrderResponse>();
+        Assert.NotNull(result);
+        Assert.NotEqual(Guid.Empty, result.OrderId);
+        Assert.Equal(orderStatus, result.OrderStatus);
+        Assert.Equal(paymentStatus, result.PaymentStatus);
+        Assert.Equal(sagaStatus, result.SagaStatus);
+        if (expectedStatus == HttpStatusCode.Created)
+            Assert.EndsWith($"/orders/{result.OrderId}", response.Headers.Location?.ToString());
+
+        using var read = await client.GetAsync($"/orders/{result.OrderId}");
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+        Assert.Equal(result, await read.Content.ReadFromJsonAsync<OrderResponse>());
+        return result.OrderId;
     }
 }

@@ -8,7 +8,7 @@ namespace EngineeringPlayground.Saga.Api.Controllers;
 public sealed record CreateOrderRequest(
     Guid InventoryItemId,
     [Range(1, int.MaxValue)] int Quantity,
-    [Range(typeof(decimal), "0.01", "9999999999999999.99")] decimal Amount,
+    [Range(typeof(decimal), "0.01", "9999999999999999.99", ParseLimitsInInvariantCulture = true)] decimal Amount,
     [Required, RegularExpression("^(Succeed|Fail)$")] string PaymentMode = "Succeed",
     [Required, RegularExpression("^(Succeed|Fail)$")] string InventoryReleaseMode = "Succeed");
 public sealed record OrderResponse(Guid OrderId, string OrderStatus, string? PaymentStatus, string? SagaStatus);
