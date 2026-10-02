@@ -67,7 +67,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Payment_failure_compensates_inventory_and_cancels_order()
+    public async Task Payment_failure_releases_inventory_cancels_order_and_marks_saga_compensated()
     {
         var id = await ProcessThroughHttpAsync(new CreateOrderRequest(InventoryItem.DemoId, 1, 100m, "Fail"),
             HttpStatusCode.UnprocessableEntity, "Cancelled", "Failed", "Compensated");
@@ -85,7 +85,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Compensation_failure_leaves_saga_unresolved()
+    public async Task Compensation_failure_leaves_inventory_reserved_and_marks_saga_compensation_failed()
     {
         var id = await ProcessThroughHttpAsync(new CreateOrderRequest(InventoryItem.DemoId, 2, 100m, "Fail", "Fail"),
             HttpStatusCode.UnprocessableEntity, "Pending", "Failed", "CompensationFailed");
@@ -193,6 +193,18 @@ public sealed class OrderProcessingTests : IAsyncLifetime
             Assert.Equal(OrderStatus.Completed, (await db.Orders.SingleAsync()).Status);
         }
     }
+    [Fact]
+    public async Task Cancelled_order_cannot_be_completed_and_remains_cancelled()
+    {
+        var id = await operations.CreateOrderAsync();
+        await operations.CancelOrderAsync(id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => operations.CompleteOrderAsync(id));
+
+        await using var db = await factory.CreateDbContextAsync();
+        Assert.Equal(OrderStatus.Cancelled, (await db.Orders.SingleAsync(x => x.Id == id)).Status);
+    }
+
     private async Task<Guid> ProcessThroughHttpAsync(CreateOrderRequest request, HttpStatusCode expectedStatus,
         string orderStatus, string paymentStatus, string sagaStatus)
     {

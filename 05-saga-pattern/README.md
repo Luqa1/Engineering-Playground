@@ -270,7 +270,7 @@ From this PoC directory, with .NET 10 and Docker available:
 dotnet test
 ```
 
-Testcontainers starts isolated PostgreSQL containers and applies migrations. HTTP scenarios verify successful processing, successful compensation, and failed compensation through the real API and subsequent order reads. Fresh DbContexts verify persisted business/Saga state. Focused tests verify independent forward commits, separately committed release/cancellation, and release refusal after committed Compensating state. Containers are disposed after each test.
+Testcontainers starts isolated PostgreSQL containers and applies migrations. HTTP scenarios verify successful processing, successful compensation, and failed compensation through the real API and subsequent order reads. Fresh DbContexts verify persisted business/Saga state. Focused tests verify independent forward commits, separately committed release/cancellation, release refusal after committed Compensating state, and rejection of completion after cancellation. Containers are disposed after each test.
 
 Additional validation:
 
