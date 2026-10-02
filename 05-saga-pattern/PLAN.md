@@ -277,6 +277,8 @@ The PoC demonstrates Saga semantics, not framework design.
 
 # M5 – Compensating Actions
 
+Status: **Completed**.
+
 Goal:
 
 Add compensation for the deterministic payment failure.

@@ -53,7 +53,7 @@ public sealed class OrderProcessingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Payment_failure_stops_saga_and_leaves_pending_order_and_committed_inventory_reservation()
+    public async Task Payment_failure_compensates_saga_and_persists_cancelled_order_and_restored_inventory()
     {
         var id = await saga.ProcessAsync(InventoryItem.DemoId, 1, 100m, PaymentMode.Fail);
 
@@ -61,11 +61,46 @@ public sealed class OrderProcessingTests : IAsyncLifetime
         var order = await db.Orders.SingleAsync(x => x.Id == id);
         var inventory = await db.InventoryItems.SingleAsync(x => x.Id == InventoryItem.DemoId);
         var payment = await db.Payments.SingleAsync(x => x.OrderId == id);
-        Assert.Equal(OrderStatus.Pending, order.Status);
-        Assert.Equal(9, inventory.AvailableQuantity);
-        Assert.Equal(1, inventory.ReservedQuantity);
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Equal(10, inventory.AvailableQuantity);
+        Assert.Equal(0, inventory.ReservedQuantity);
         Assert.Equal(PaymentStatus.Failed, payment.Status);
         Assert.Equal(100m, payment.Amount);
+    }
+
+    [Fact]
+    public async Task Reservation_release_and_cancellation_commit_as_separate_business_operations()
+    {
+        var id = await operations.CreateOrderAsync();
+        await operations.ReserveInventoryAsync(id, InventoryItem.DemoId, 2);
+        await operations.ProcessPaymentAsync(id, 100m, PaymentMode.Fail);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            var inventory = await db.InventoryItems.SingleAsync();
+            Assert.Equal(8, inventory.AvailableQuantity);
+            Assert.Equal(2, inventory.ReservedQuantity);
+            Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync()).Status);
+            Assert.Equal(PaymentStatus.Failed, (await db.Payments.SingleAsync()).Status);
+        }
+
+        await operations.ReleaseInventoryAsync(id, InventoryItem.DemoId, 2);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            var inventory = await db.InventoryItems.SingleAsync();
+            Assert.Equal(10, inventory.AvailableQuantity);
+            Assert.Equal(0, inventory.ReservedQuantity);
+            Assert.Equal(OrderStatus.Pending, (await db.Orders.SingleAsync()).Status);
+            Assert.Equal(PaymentStatus.Failed, (await db.Payments.SingleAsync()).Status);
+        }
+
+        await operations.CancelOrderAsync(id);
+        await using (var db = await factory.CreateDbContextAsync())
+        {
+            Assert.Equal(OrderStatus.Cancelled, (await db.Orders.SingleAsync()).Status);
+            Assert.Equal(PaymentStatus.Failed, (await db.Payments.SingleAsync()).Status);
+            Assert.Equal(10, (await db.InventoryItems.SingleAsync()).AvailableQuantity);
+            Assert.Equal(0, (await db.InventoryItems.SingleAsync()).ReservedQuantity);
+        }
     }
 
     [Fact]

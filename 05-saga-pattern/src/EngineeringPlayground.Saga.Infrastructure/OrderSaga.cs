@@ -29,7 +29,10 @@ public sealed class OrderSaga
 
         if (paymentStatus == PaymentStatus.Failed)
         {
-            logger.LogInformation("Order Saga stopped after payment failure {OrderId}; inventory remains reserved", orderId);
+            logger.LogInformation("Starting compensation after payment failure for order {OrderId} and inventory {InventoryItemId}", orderId, inventoryItemId);
+            await operations.ReleaseInventoryAsync(orderId, inventoryItemId, quantity, cancellationToken);
+            await operations.CancelOrderAsync(orderId, cancellationToken);
+            logger.LogInformation("Compensation completed for order {OrderId}", orderId);
             return orderId;
         }
 

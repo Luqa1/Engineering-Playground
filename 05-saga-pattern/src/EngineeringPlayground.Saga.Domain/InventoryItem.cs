@@ -22,4 +22,12 @@ public sealed class InventoryItem
         AvailableQuantity -= quantity;
         ReservedQuantity += quantity;
     }
+    public void Release(int quantity)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
+        if (quantity > ReservedQuantity)
+            throw new InvalidOperationException("Cannot release more inventory than is reserved.");
+        AvailableQuantity += quantity;
+        ReservedQuantity -= quantity;
+    }
 }

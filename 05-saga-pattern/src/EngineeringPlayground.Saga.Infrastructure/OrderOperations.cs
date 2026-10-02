@@ -48,6 +48,27 @@ public sealed class OrderOperations
             logger.LogInformation("Payment succeeded {PaymentId} for order {OrderId}", payment.Id, orderId);
         return payment.Status;
     }
+    // Compensation is a new committed business operation, not rollback of the reservation.
+    public async Task ReleaseInventoryAsync(Guid orderId, Guid inventoryItemId, int quantity, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var item = await db.InventoryItems.SingleAsync(x => x.Id == inventoryItemId, cancellationToken);
+        item.Release(quantity);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        logger.LogInformation("Inventory released {InventoryItemId} for order {OrderId}", inventoryItemId, orderId);
+    }
+    public async Task CancelOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var order = await db.Orders.SingleAsync(x => x.Id == orderId, cancellationToken);
+        order.Cancel();
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        logger.LogInformation("Order cancelled {OrderId}", orderId);
+    }
     public async Task CompleteOrderAsync(Guid orderId, CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
