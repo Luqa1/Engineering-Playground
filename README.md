@@ -29,7 +29,7 @@ Each PoC README answers:
 2. [Structured Logging & Observability](02-structured-logging/) — demonstrates production troubleshooting with structured, contextual, correlated, and centralized logs. **Status: Completed.**
 3. [Optimistic Concurrency](03-optimistic-concurrency/) — prevents silent lost updates with atomic version checks and explicit conflict handling. **Status: Completed.**
 4. [Distributed Lock](04-distributed-lock/) — coordinates protected work across multiple application instances. **Status: Completed.**
-5. [Saga Pattern](05-saga-pattern/) — **Status: In Progress.**
+5. [Saga Pattern](05-saga-pattern/) — **Status: Completed.**
 6. CQRS
 
 See [ROADMAP.md](ROADMAP.md) for the planned PoCs. More engineering topics will be added over time.

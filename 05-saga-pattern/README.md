@@ -1,216 +1,88 @@
 # Saga Pattern
 
-> **Work in Progress** — M6 Saga State & Compensation Failure is complete. [Implementation plan](PLAN.md).
->
-> An explicit Saga coordinates the workflow and compensates deterministic payment failure. Persisted Saga state exposes unresolved compensation failure.
+## Overview
 
-## Scenario and motivation
+A Saga coordinates a business process composed of independently committed operations. When a later operation fails, previously committed work cannot simply be rolled back, so the process uses compensating business actions.
 
-An order is created, one inventory item is reserved, a simulated payment outcome is recorded, and the order is completed. The operations commit independently. M3/M4 exposed partial state after deterministic payment failure; M5 adds new committed operations to restore inventory and cancel the incomplete order.
+This PoC demonstrates Saga semantics in one synchronous ASP.NET Core application against one PostgreSQL instance. Independent commit boundaries teach the pattern without introducing microservices solely for architectural appearance.
 
-The minimal domain contains `Order` (Id, Pending/Completed/Cancelled status, CreatedAtUtc), `InventoryItem` (Id, Name, AvailableQuantity, ReservedQuantity), and `Payment` (Id, OrderId, Amount, Succeeded/Failed status, CreatedAtUtc). The deterministic Demo Item starts with 10 available units and no reservations. Successful completion retains the reservation; fulfillment is outside this example.
-
-## Implementation and transaction boundaries
-
-The controller delegates to `OrderSaga` in Infrastructure. The Saga coordinates `OrderOperations`, which owns the independently committed persistence operations. Domain entities contain the small business behaviors. EF configuration and DbContext live in Infrastructure; Domain has no project dependencies. API references Domain and Infrastructure. There is no Application project.
-
-Each explicit operation creates and disposes its own DbContext and local database transaction. It awaits SaveChanges and COMMIT before returning. There is no outer transaction:
+## The Problem and Partial Failure
 
 ```text
-Order commit → Inventory commit → Payment commit → Order completion commit
+Create Order → COMMIT
+Reserve Inventory → COMMIT
+Process Payment → success or failure
+Complete Order → COMMIT (only on success)
 ```
 
-Using one PostgreSQL instance does not make the workflow atomic. The default payment succeeds; an explicit payment failure releases inventory and cancels the order. Inventory uses optimistic concurrency to reject a stale stock update; no retry policy is included.
+When payment fails, the order already exists and inventory is already reserved. The business process is incomplete despite successful earlier local transactions. This is partial business failure.
 
-```mermaid
-flowchart TD
-    HTTP[HTTP request] --> Controller[ASP.NET Core Controllers]
-    Controller --> Processor[OrderSaga]
-    Processor --> Operations[Create order / Reserve inventory / Process payment / Release inventory / Cancel order / Complete order]
-    Processor --> State[OrderSagaState persistence]
-    State --> DB
-    Operations --> DB[(PostgreSQL: independently committed operations)]
-```
+## Why a Single Rollback Is Not Enough
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as OrdersController
-    participant Processor as OrderSaga
-    participant DB as PostgreSQL
-    Client->>API: POST /orders
-    API->>Processor: ProcessAsync
-    Processor->>DB: BEGIN / INSERT Pending order / COMMIT
-    Processor->>DB: INSERT Running Saga / COMMIT
-    Processor->>DB: BEGIN / UPDATE inventory / COMMIT
-    Processor->>DB: BEGIN / INSERT Succeeded payment / COMMIT
-    Processor->>DB: BEGIN / UPDATE Completed order / COMMIT
-    Processor->>DB: UPDATE Completed Saga / COMMIT
-    Processor-->>API: Order ID
-    API-->>Client: 201 Created + statuses + Location
-```
+Transaction A reserves inventory and commits. Transaction B processes payment later. Failure or rollback in B cannot retroactively roll back committed A.
 
-## Running the example
+Here, simulated payment failure actually commits a `Failed` payment record; it is a business result, not a database transaction error. There is no transaction spanning the entire Saga. Production boundaries may correspond to separate services, databases, or external providers, but Saga requires neither separate databases nor microservices. Prefer one local ACID transaction if it safely solves the actual problem.
 
-From `05-saga-pattern`:
+## Example Scenario
 
-```bash
-docker compose up --build
-```
+| Entity | Meaning |
+| --- | --- |
+| `Order` | ID, creation timestamp, and business status: `Pending`, `Completed`, or `Cancelled`. |
+| `InventoryItem` | Available/reserved aggregate quantities. Seeded Demo Item: `11111111-1111-1111-1111-111111111111`, 10 available units, zero reserved. |
+| `Payment` | Simulated `Succeeded` or `Failed` result, amount, order ID, ID, and creation timestamp. No external provider. |
+| `OrderSagaState` | ID, unique order ID, process status, creation/update timestamps. |
 
-Compose starts PostgreSQL 17 and the .NET 10 API. PostgreSQL's healthcheck gates API startup. The API automatically applies EF Core migrations and deterministic inventory seed in Development (and other non-production environments). Production never migrates automatically and requires controlled migration execution before starting the API.
-
-Defaults work without a `.env` file. Copy `.env.example` to `.env` to override local database credentials or ports. These defaults are local demo credentials. API is at http://localhost:8085; PostgreSQL is at localhost:5545.
-
-```bash
-curl -i -X POST http://localhost:8085/orders \
-  -H "Content-Type: application/json" \
-  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100}'
-```
-
-The response contains `orderId`, `orderStatus: "Completed"`, `paymentStatus: "Succeeded"`, and `sagaStatus: "Completed"`. Use the returned ID:
-
-```bash
-curl http://localhost:8085/orders/<orderId>
-curl http://localhost:8085/inventory/11111111-1111-1111-1111-111111111111
-docker compose logs api
-```
-
-After the first request, available inventory is 9 and reserved inventory is 1. Logs show Order created, Inventory reserved, Payment succeeded, and Order completed with structured IDs. Further requests consume more stock; keep requested quantity within available inventory. No compensation runs on the successful path.
-
-To reset only this PoC's data:
-
-```bash
-docker compose down -v
-docker compose up --build
-```
-
-## Solution and tests
-
-```text
-EngineeringPlayground.Saga.sln
-src/
-  EngineeringPlayground.Saga.Api/
-  EngineeringPlayground.Saga.Domain/
-  EngineeringPlayground.Saga.Infrastructure/
-tests/
-  EngineeringPlayground.Saga.IntegrationTests/
-```
-
-```bash
-dotnet format
-dotnet build
-dotnet test
-docker compose config
-```
-
-Tests require a running Docker daemon. Testcontainers starts an isolated PostgreSQL container for every test; migrations seed 10 available units and zero reserved units. Three primary tests send HTTP requests through the real API and verify final state using fresh DbContexts, including exactly one Saga state per order. They also read the outcome through GET /orders/{id}. Three focused tests retain coverage of independent forward commits, committed compensation operations, and release refusal after committed Compensating state. Containers are disposed after each test.
-
-For host development, start Compose PostgreSQL and run the API with the Development profile. Its development connection string matches Compose defaults; override ConnectionStrings__Orders when changing database settings.
-
-## Trade-offs and use
-
-This small synchronous baseline makes separate commits easy to inspect without extra infrastructure. A failed later operation can leave previously committed state, and the current milestone provides no recovery or idempotency and exposes compensation failure. Payment is simulated, and inventory is aggregated rather than tracked per order.
-
-Use this milestone to understand independently committed business operations and observe compensation after an independent inventory commit. Use a single local transaction when the actual business operation can and should be atomic. This incomplete milestone is not a production order or payment system.
-
-## Partial Failure
-
-Send a valid request selecting the deterministic failure outcome:
-
-```bash
-curl -i -X POST http://localhost:8085/orders \
-  -H "Content-Type: application/json" \
-  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail"}'
-```
-
-Omitting `paymentMode` defaults to `Succeed`. Only `Succeed` and `Fail` are accepted; malformed selectors return 400 before processing. A valid `Fail` request returns HTTP 422 with `orderId`, `orderStatus: "Cancelled"`, `paymentStatus: "Failed"`, and `sagaStatus: "Compensated"`. Use that ID to inspect committed state:
-
-```bash
-curl http://localhost:8085/orders/<orderId>
-curl http://localhost:8085/inventory/11111111-1111-1111-1111-111111111111
-```
-
-From a clean database, failure restores available inventory to 10 and reserved inventory to 0. If the successful walkthrough ran first, the totals remain 9 available and 1 reserved. The order remains persisted as Cancelled and the payment record remains Failed.
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Processor as OrderSaga
-    participant DB as PostgreSQL
-    Client->>Processor: POST /orders (paymentMode: Fail)
-    Processor->>DB: BEGIN / INSERT Pending order / COMMIT
-    Processor->>DB: INSERT Running Saga / COMMIT
-    Processor->>DB: BEGIN / UPDATE inventory reservation / COMMIT
-    Processor->>DB: BEGIN / INSERT Failed payment / COMMIT
-    Processor->>DB: UPDATE Compensating Saga / COMMIT
-    Processor->>DB: BEGIN / UPDATE inventory release / COMMIT
-    Processor->>DB: BEGIN / UPDATE Cancelled order / COMMIT
-    Processor->>DB: UPDATE Compensated Saga / COMMIT
-    Processor-->>Client: HTTP 422 + order ID and statuses
-    Client->>DB: Fresh reads: Cancelled order, restored inventory, Failed payment
-```
-
-Order creation commits first, inventory reservation commits next, and only then does simulated payment fail. The failed outcome is recorded in its own committed transaction; this demo does not cause a database error or payment transaction rollback. Logs show Order created, Inventory reserved, Payment failed, Starting compensation, Inventory released, Order cancelled, and Compensation completed with structured identifiers.
-
-A database rollback affects only the transaction being rolled back. If transaction A reserves inventory and commits, a failure or rollback in payment transaction B cannot retroactively undo A. The payment failure cannot roll back the already committed inventory transaction, leaving a partial business state.
-
-The PoC intentionally preserves independent commit boundaries instead of wrapping all steps in one large transaction. In a distributed workflow these operations might belong to separate services, databases, or external providers. One PostgreSQL instance keeps this example small while exposing the same boundary problem.
-
-M3/M4 deliberately left the order Pending and inventory reserved after payment failure. M5 replaces that final state with explicit compensation. Adding Cancelled requires no migration: order status already uses an unconstrained string column, and its schema and EF model mapping remain unchanged.
+Success keeps inventory reserved; there is no fulfillment step. Inventory is an aggregate counter, not a per-order reservation record. Payment and Saga state each have a unique foreign key to the order.
 
 ## Saga Orchestration
 
-Before M4, sequential application logic in `OrderProcessor` owned the entire workflow. Now `OrderSaga` explicitly owns process progression: which step runs next, and what happens when payment fails. `OrderOperations` contains only the local database operations; there is exactly one process coordinator, with no outer transaction.
+`OrdersController` invokes `OrderSaga`, which calls `OrderOperations` and persists process state through `OrderSagaStateService`:
 
 ```text
-Controller → OrderSaga
-               ├── Create Order (COMMIT)
-               ├── Reserve Inventory (COMMIT)
-               ├── Process Payment (COMMIT)
-               └── Payment succeeded? Complete Order (COMMIT)
-                   Otherwise: Release Inventory (COMMIT) → Cancel Order (COMMIT)
+Create Order → Start Saga → Reserve Inventory → Process Payment
+  Succeeded → Complete Order → Completed Saga
+  Failed → Compensating Saga → Release Inventory
+    Released → Cancel Order → Compensated Saga
+    Refused → CompensationFailed Saga
 ```
 
-Introducing a Saga orchestrator does not automatically undo previously committed work.
+The orchestrator decides what executes next, whether forward processing continues, when compensation starts, and which final process outcome to persist.
 
-```text
-M4: Reserve → COMMIT → Payment fails → Stop → Inventory remains reserved
-M5: Reserve → COMMIT → Payment fails → Release → COMMIT → Cancel → COMMIT
-```
+**Orchestration** uses an explicit coordinator. **Choreography** lets participants react to events without one central process coordinator. Orchestration makes boundaries, failure decisions, compensation, and Saga state easy to observe here.
 
-The successful invocation leaves a Completed order, Succeeded payment, and persisted reservation. Payment failure with successful release leaves a Cancelled order, Failed payment, and restored inventory; a refused release leaves a Pending order and reserved inventory. Expected payment failure is a business result; unexpected infrastructure failures propagate as exceptions. Cancellation tokens pass through every step; cancellation does not compensate committed work.
-
-This PoC uses orchestration because one explicit coordinator makes step order, decisions, failure flow, and future compensation easy to observe. M5 makes inventory release followed by order cancellation explicit in the failure branch. There is no choreography or messaging infrastructure.
+There is no message broker. Processing is synchronous within the HTTP request. Messaging is not required to demonstrate core Saga concepts; asynchronous messaging may be appropriate for production boundaries.
 
 ## Compensating Actions
 
+Payment failure after reservation triggers inventory release followed by order cancellation:
+
 ```text
-Reserve Inventory
-      ↓
-COMMIT
-      ↓
-Payment fails
-      ↓
-Release Inventory
-      ↓
-COMMIT
-      ↓
-Cancel Order
-      ↓
-COMMIT
+Payment fails → Release Inventory → COMMIT → Cancel Order → COMMIT
 ```
 
-`Release Inventory` does not roll back the original transaction. It is a new business operation that compensates for the effect of the earlier reservation. `InventoryItem.Release(quantity)` restores available stock and reduces reserved stock, rejecting nonpositive quantities or releases larger than the reserved quantity. `OrderOperations.ReleaseInventoryAsync` persists this change in its own fresh DbContext and transaction after reservation and failed payment have committed.
+**Compensation is not rollback.** `ReleaseInventoryAsync` executes a new business operation in a new transaction after the original reservation committed:
 
-Only the known Failed payment result after successful reservation triggers this branch. The Saga awaits the release commit before `CancelOrderAsync` commits the Pending order's transition to Cancelled. The order still exists as business history; the Failed payment remains unchanged because no successful payment needs reversal. For example, cancelling a hotel booking semantically compensates booking it rather than undoing the original database commit.
+```text
+Transaction A: Reserve Inventory → COMMIT
+... later, after payment failure ...
+Transaction B: Release Inventory → COMMIT
+```
 
-M6 persists process state and handles an explicit inventory release refusal. There is no retry or cancellation recovery. Unexpected infrastructure failures and request cancellation propagate rather than being treated as deterministic payment failure.
+`InventoryItem.Release(quantity)` increases available stock and reduces reserved stock. It rejects nonpositive quantities and releases exceeding reserved stock. The Saga waits for release to commit before cancelling the Pending order.
 
+Compensation is semantic: it attempts to restore an acceptable business state without erasing history. The order remains persisted as `Cancelled`; payment remains `Failed`. No successful payment needs refunding in this path.
 
 ## Saga State
 
-Before M6, payment failure could be compensated within one request. Once release can fail, durable state is needed to say that the process remains unresolved. `OrderSagaState` stores only Id, OrderId (unique foreign key), Status, CreatedAtUtc, and UpdatedAtUtc. It is created as Running after the order commit and before reservation. Each state save uses a fresh DbContext and its own SaveChanges transaction.
+`Order.Status` describes the business entity; `OrderSagaState.Status` describes the coordinating process. Durable process state makes completed and unresolved outcomes inspectable after the request ends.
+
+| Saga status | Meaning here |
+| --- | --- |
+| `Running` | Created after the order commit, before reservation; forward work incomplete. |
+| `Completed` | Order completion committed and successful process outcome saved. |
+| `Compensating` | Failed payment committed; compensating work about to run. |
+| `Compensated` | Release and cancellation committed; compensation outcome saved. |
+| `CompensationFailed` | Deterministic release refusal recorded; process unresolved. |
 
 ```mermaid
 stateDiagram-v2
@@ -220,76 +92,209 @@ stateDiagram-v2
     Compensating --> CompensationFailed: Release refused
 ```
 
-`Order.Status` describes business state; `OrderSagaState.Status` describes the coordinating process. Running means forward work is incomplete; Compensating means required compensating work is incomplete. Final states describe work known to have happened. GET /orders/{id} and POST /orders include `sagaStatus`; older or directly created orders without a Saga return null. Success returns 201; both payment-failure outcomes return 422 with the order ID and actual statuses.
-
-Business commits and process-state commits are separate. A crash or cancellation between them can leave Running or Compensating even when a business operation committed. Unexpected exceptions propagate and are not labelled CompensationFailed. State alone supplies neither recovery nor exactly-once execution.
+The entity stores `Id`, `OrderId`, `Status`, `CreatedAtUtc`, and `UpdatedAtUtc`. It does not store sufficient workflow input or provide a mechanism for automatic resumption.
 
 ## Compensation Failure
 
-```bash
-curl -i -X POST http://localhost:8085/orders \
-  -H "Content-Type: application/json" \
-  -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail","inventoryReleaseMode":"Fail"}'
+```text
+Reserve Inventory COMMIT → Failed Payment COMMIT → Compensating Saga COMMIT
+→ Release Inventory refused → CompensationFailed Saga COMMIT
 ```
 
-`inventoryReleaseMode` defaults to Succeed and accepts only Succeed or Fail. Fail deterministically refuses release inside `ReleaseInventoryAsync`, after loading committed inventory in the compensation operation and before changing stock. It matters only when payment fails; successful payment does not attempt release. Malformed selectors return 400 before processing.
+Deterministic refusal occurs after loading committed inventory, before stock mutation. Cancellation is skipped: Order = `Pending`, Payment = `Failed`, inventory remains reserved, Saga = `CompensationFailed`. This intentional unresolved outcome remains observable. Saga does not guarantee successful compensation or automatic recovery.
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Saga as OrderSaga
-    participant DB as PostgreSQL
-    Client->>Saga: POST /orders (payment Fail, release Fail)
-    Saga->>DB: Pending order COMMIT
-    Saga->>DB: Running Saga COMMIT
-    Saga->>DB: Inventory reservation COMMIT
-    Saga->>DB: Failed payment COMMIT
-    Saga->>DB: Compensating Saga COMMIT
-    Saga->>DB: Attempt release: load inventory, refuse without mutation
-    Saga->>DB: CompensationFailed Saga COMMIT
-    Saga-->>Client: 422 + orderId + actual statuses
-    Client->>Saga: GET /orders/{id}
-    Saga->>DB: Independent read of persisted outcome
-    Saga-->>Client: Pending / Failed / CompensationFailed
-```
-
-Processing stops before cancellation. From clean state, inventory remains 9 available and 1 reserved, the order stays Pending, payment is Failed, and Saga is CompensationFailed. Repeat GET /orders/{id} and GET /inventory/11111111-1111-1111-1111-111111111111 to inspect independently. Inventory remains an aggregate counter, not a per-order reservation record.
-
-The reservation already committed. The failed release is a new compensating business operation, not a failure to roll back the original transaction. Logs identify SagaId, OrderId and InventoryItemId and show entry into compensation and the final failure outcome.
-
-PostgreSQL-backed tests cover Completed, Compensated and CompensationFailed using fresh contexts after processing returns. A focused operation test observes committed Compensating state before the real release refusal and verifies unchanged stock. Existing independent-business-commit tests remain.
-
-Production could use compensation retries, delayed backoff, manual intervention, operator tooling and idempotent compensating operations. The appropriate choice depends on business requirements. M6 implements none of these: there is no startup scan, worker, retry or resume endpoint. Topology remains postgres and api.
+Unexpected infrastructure exceptions and request cancellation propagate rather than becoming the demonstrated business failure/refusal outcomes. They do not automatically compensate earlier commits.
 
 ## End-to-End Scenarios
 
-M7 verifies the complete HTTP → Controller → OrderSaga → EF Core → PostgreSQL path. The PoC remains **Work in Progress**; M8 documentation is pending.
+Each row assumes a fresh database and a one-unit request:
 
-Each row below assumes a fresh database with 10 available units and zero reserved units, and requests one unit:
-
-| Scenario | Request selectors | HTTP | Order | Payment | Saga | Available / reserved |
+| Scenario | Selectors | HTTP | Order | Payment | Saga | Available / reserved |
 | --- | --- | --- | --- | --- | --- | --- |
 | Success | Defaults | 201 | Completed | Succeeded | Completed | 9 / 1 |
 | Payment failure, compensation succeeds | `paymentMode: Fail` | 422 | Cancelled | Failed | Compensated | 10 / 0 |
-| Compensation failure | Both selectors `Fail` | 422 | Pending | Failed | CompensationFailed | 9 / 1 |
+| Compensation failure | Both modes `Fail` | 422 | Pending | Failed | CompensationFailed | 9 / 1 |
+
+Running all three examples sequentially after one clean startup gives inventory totals **9 / 1**, **9 / 1**, then **8 / 2**. Compensation releases only its request's reserved quantity.
+
+## Transaction Boundaries
+
+Each `OrderOperations` operation owns a fresh `OrderDbContext` and explicit local transaction. Saga-state saves use another fresh context and an independent `SaveChangesAsync` transaction. No transaction spans the complete Saga.
+
+```text
+Success:
+Create Order COMMIT → Running Saga COMMIT → Reserve Inventory COMMIT
+→ Succeeded Payment COMMIT → Complete Order COMMIT → Completed Saga COMMIT
+
+Payment failure:
+Create Order COMMIT → Running Saga COMMIT → Reserve Inventory COMMIT
+→ Failed Payment COMMIT → Compensating Saga COMMIT
+→ Release Inventory COMMIT → Cancel Order COMMIT → Compensated Saga COMMIT
+
+Release refusal:
+... → Compensating Saga COMMIT → Release refused (no stock mutation or commit)
+→ CompensationFailed Saga COMMIT
+```
+
+### Crash-consistency limitation
+
+Business commits and process-state commits are separate. A crash after release commits but before cancellation or saving `Compensated` can leave released stock, a Pending order, and a Compensating Saga. A crash after order completion but before saving Completed Saga can leave a Completed order with Running process state. A crash between order creation and Saga creation can leave no Saga record.
+
+State describes the last saved process outcome, not an atomic snapshot of all operations. There is no startup scan, retry worker, or resume endpoint. Production recovery requires additional techniques appropriate to the failure model.
+
+## Architecture
+
+See the [architecture diagram](diagrams/architecture.md). Domain has no project dependencies; Infrastructure depends on Domain; API depends on both. `OrderDbContext` and `IEntityTypeConfiguration<T>` mappings live in Infrastructure. Compose contains only `api` and `postgres`; there is no Worker.
+
+## Sequence Diagrams
+
+- [Successful flow](diagrams/success.md)
+- [Successful compensation](diagrams/compensation.md)
+- [Compensation failure](diagrams/compensation-failure.md)
+
+## What a Saga Guarantees
+
+For the demonstrated scenarios, this implementation explicitly coordinates flow, commits local operations before starting the next, triggers compensating business operations after known payment failure, persists final process outcomes, and exposes failed release through durable `CompensationFailed` state. Scenario selection is deterministic. Integration tests inspect actual persisted outcomes.
+
+These properties are demonstrated by this implementation, not universal guarantees of every Saga.
+
+## What a Saga Does Not Guarantee
+
+This PoC does not provide:
+
+- One global ACID transaction or automatic rollback of committed work.
+- Exactly-once execution, exactly-once delivery, or automatic idempotency.
+- Guaranteed successful compensation or automatic retries.
+- Durable message delivery or asynchronous messaging.
+- Crash-safe recovery at every intermediate boundary or automatic recovery after process termination.
+- Distributed locking or coordination/deduplication across duplicate requests.
+
+`AvailableQuantity` is an EF Core concurrency token that rejects stale inventory updates. This limited local protection does not coordinate the whole workflow, retry conflicts, or make duplicate POST requests idempotent. Each POST creates another order.
+
+## Trade-offs
+
+Explicit workflow, local transaction boundaries, business compensation, and observable unresolved state make the process understandable. Costs include additional state, more failure paths, compensation logic, harder testing, intermediate inconsistency, and recovery complexity. Synchronous processing ties workflow duration to the request lifetime.
+
+## When to Use
+
+Use Saga when a business process spans independently committed operations, later failure cannot roll back earlier commits, compensation is meaningful, and temporary inconsistency is acceptable.
+
+## When Not to Use
+
+Prefer one local ACID transaction when the whole operation can safely be atomic. Saga is unnecessary without a multi-step consistency problem, useful compensation, or a benefit from the added workflow/state complexity.
+
+## Production Considerations
+
+Depending on requirements, production may need idempotent operations and compensation, duplicate request/message handling, retry policies with backoff, timeouts, concurrency coordination, and process crash recovery. Asynchronous communication may require durable messaging and Outbox/Inbox patterns. Monitoring, alerting, operator tooling, and manual recovery help resolve failed compensation.
+
+These concerns are intentionally outside this PoC. Every system does not necessarily need every technique.
+
+## Running the Example
+
+Prerequisites: Docker with Compose and a running daemon; .NET 10 SDK for host builds/tests. From `05-saga-pattern`:
 
 ```bash
-# Success
+docker compose up --build
+```
+
+Compose starts PostgreSQL 17 and the .NET 10 API. PostgreSQL's healthcheck gates API startup. The API applies EF Core migrations automatically in Development and other non-production environments; the initial migration seeds inventory. No manual database setup, migrations, or service ordering is required. **Production never migrates automatically** and requires controlled migration execution before application startup.
+
+Defaults work without `.env`. Copy `.env.example` to `.env` to override local credentials or ports. Default API URL: `http://localhost:8085`; PostgreSQL: `localhost:5545`. Credentials are local demo defaults.
+
+```bash
+docker compose logs api
+docker compose down
+```
+
+Reset this PoC's data and restart with seeded stock:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+## API
+
+`POST /orders` accepts `inventoryItemId` (GUID), `quantity` (positive integer), `amount` (0.01 through 9999999999999999.99), and optional `paymentMode` / `inventoryReleaseMode` strings. Both modes default to `Succeed`, accepting only case-sensitive `Succeed` or `Fail`. Invalid selectors return 400 before processing. Use the seeded item and quantities within available stock; missing items or insufficient stock are not translated into friendly business error responses.
+
+Release mode matters only after failed payment. Failure selection is explicit, without randomness or timing dependencies.
+
+### Success
+
+```bash
 curl -i -X POST http://localhost:8085/orders \
   -H "Content-Type: application/json" \
   -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100}'
+```
 
-# Payment failure with successful compensation
+Returns 201 with a Location header for the order read endpoint and JSON fields `orderId`, `orderStatus: "Completed"`, `paymentStatus: "Succeeded"`, `sagaStatus: "Completed"`.
+
+### Payment failure with successful compensation
+
+```bash
 curl -i -X POST http://localhost:8085/orders \
   -H "Content-Type: application/json" \
   -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail"}'
+```
 
-# Payment failure followed by refused inventory release
+Returns 422 with `orderId`, `orderStatus: "Cancelled"`, `paymentStatus: "Failed"`, `sagaStatus: "Compensated"`.
+
+### Compensation failure
+
+```bash
 curl -i -X POST http://localhost:8085/orders \
   -H "Content-Type: application/json" \
   -d '{"inventoryItemId":"11111111-1111-1111-1111-111111111111","quantity":1,"amount":100,"paymentMode":"Fail","inventoryReleaseMode":"Fail"}'
 ```
 
-Use each response's `orderId` with `GET /orders/{orderId}` and inspect stock with `GET /inventory/11111111-1111-1111-1111-111111111111`. Repeat the reads after compensation failure: Pending / Failed / CompensationFailed and the reservation remain durable and intentionally unresolved. No automatic recovery runs.
+Returns 422 with `orderId`, `orderStatus: "Pending"`, `paymentStatus: "Failed"`, `sagaStatus: "CompensationFailed"`.
 
-If these requests run sequentially after one clean startup, inventory totals are respectively 9 / 1, 9 / 1, and 8 / 2. Successful compensation restores only that request's reservation. The focused commit-boundary tests prove that reservation is already durable before failed payment, and release and cancellation are new committed business operations.
+These examples use Bash line continuations. In PowerShell use `curl.exe` with each command on one line.
+
+### Inspect persisted state
+
+Copy the returned `orderId` into the first command:
+
+```bash
+curl http://localhost:8085/orders/<orderId>
+curl http://localhost:8085/inventory/11111111-1111-1111-1111-111111111111
+```
+
+`GET /orders/{id}` returns 200 with the same four fields as POST; payment/Saga statuses can be null when their records do not exist. `GET /inventory/{id}` returns 200 with `id`, `name`, `availableQuantity`, `reservedQuantity`. Both return 404 for a missing resource. Repeat reads after compensation failure: the unresolved outcome remains, with no automatic recovery.
+
+## Tests
+
+From this PoC directory, with .NET 10 and Docker available:
+
+```bash
+dotnet test
+```
+
+Testcontainers starts isolated PostgreSQL containers and applies migrations. HTTP scenarios verify successful processing, successful compensation, and failed compensation through the real API and subsequent order reads. Fresh DbContexts verify persisted business/Saga state. Focused tests verify independent forward commits, separately committed release/cancellation, and release refusal after committed Compensating state. Containers are disposed after each test.
+
+Additional validation:
+
+```bash
+dotnet format
+dotnet build
+docker compose config
+```
+
+## Project Structure
+
+```text
+05-saga-pattern/
+├── src/
+│   ├── EngineeringPlayground.Saga.Api/
+│   ├── EngineeringPlayground.Saga.Domain/
+│   └── EngineeringPlayground.Saga.Infrastructure/
+├── tests/
+│   └── EngineeringPlayground.Saga.IntegrationTests/
+├── diagrams/
+├── docs/
+├── EngineeringPlayground.Saga.sln
+├── docker-compose.yml
+├── .env.example
+├── README.md
+└── PLAN.md
+```

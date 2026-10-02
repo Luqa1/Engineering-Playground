@@ -132,6 +132,8 @@ This distinction is central to the PoC.
 
 # M1 – Repository Skeleton
 
+Status: **Completed**.
+
 Goal:
 
 Prepare the PoC structure and implementation plan.
@@ -430,6 +432,8 @@ Do not use:
 ---
 
 # M8 – Documentation
+
+Status: **Completed**.
 
 Goal:
 
