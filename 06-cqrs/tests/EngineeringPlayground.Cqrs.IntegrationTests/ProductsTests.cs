@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 
 namespace EngineeringPlayground.Cqrs.IntegrationTests;
@@ -109,6 +111,36 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Equal(new ProductDetails(KeyboardId, "Mechanical Keyboard", 299.00m, 15), product);
     }
 
+    [Fact]
+    public async Task QueriesReturnReadModelsWithoutMaterializingProductsOrSavingChanges()
+    {
+        await ReplaceProductsAsync(new Product(KeyboardId, "Mechanical Keyboard", 20m, 3));
+        var queryBoundary = new QueryBoundaryInterceptor();
+        await using var readFactory = _factory.WithWebHostBuilder(builder =>
+            builder.ConfigureServices(services => services.ConfigureDbContext<CqrsDbContext>(options =>
+                options.AddInterceptors(queryBoundary))));
+        using var readClient = readFactory.CreateClient();
+        queryBoundary.EnforceReadOnlyProjections = true;
+
+        // Intercept actual EF operations, including untracked entity materialization.
+        var products = await readClient.GetFromJsonAsync<List<ProductListItem>>("/products");
+        Assert.Equal(new ProductListItem(KeyboardId, "Mechanical Keyboard", 20m, 3), Assert.Single(products!));
+        var details = await readClient.GetFromJsonAsync<ProductDetails>($"/products/{KeyboardId}");
+        Assert.Equal(new ProductDetails(KeyboardId, "Mechanical Keyboard", 20m, 3), details);
+        var dashboard = await readClient.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+        Assert.NotNull(dashboard);
+        Assert.Equal(new InventoryAttentionItemResponse(KeyboardId, "Mechanical Keyboard", 3, "LowStock", 60m),
+            Assert.Single(dashboard.ProductsNeedingAttention));
+
+        // A separate context observes the committed row after all three HTTP reads.
+        await using var verification = CreateDatabase();
+        var persisted = Assert.Single(await verification.Products.ToListAsync());
+        Assert.Equal(KeyboardId, persisted.Id);
+        Assert.Equal("Mechanical Keyboard", persisted.Name);
+        Assert.Equal(20m, persisted.Price);
+        Assert.Equal(3, persisted.AvailableQuantity);
+    }
+
     [Theory]
     [InlineData(319)]
     [InlineData(0)]
@@ -166,6 +198,7 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(15, persisted.AvailableQuantity);
+        Assert.Equal(299.00m, persisted.Price);
     }
 
     [Fact]
@@ -181,6 +214,7 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(299.00m, persisted.Price);
+        Assert.Equal(15, persisted.AvailableQuantity);
     }
 
     [Theory]
@@ -369,4 +403,36 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
 
     private CqrsDbContext CreateDatabase() => new(new DbContextOptionsBuilder<CqrsDbContext>()
         .UseNpgsql(_connectionString).Options);
+
+    private sealed class QueryBoundaryInterceptor : SaveChangesInterceptor, IMaterializationInterceptor
+    {
+        public bool EnforceReadOnlyProjections { get; set; }
+
+        public object InitializedInstance(MaterializationInterceptionData materializationData, object entity)
+        {
+            if (EnforceReadOnlyProjections && entity is Product)
+            {
+                throw new InvalidOperationException("Queries must project DTOs without materializing Product.");
+            }
+
+            return entity;
+        }
+
+        public override InterceptionResult<int> SavingChanges(
+            DbContextEventData eventData, InterceptionResult<int> result)
+        {
+            if (EnforceReadOnlyProjections)
+            {
+                throw new InvalidOperationException("Queries must not save changes.");
+            }
+
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            return ValueTask.FromResult(SavingChanges(eventData, result));
+        }
+    }
 }

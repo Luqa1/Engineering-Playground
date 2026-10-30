@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** M1 through M6 are complete. M7 and M8 remain planned.
+**Status: Work in Progress.** M1 through M7 are complete. M8 remains planned.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -68,7 +68,7 @@ Completion: readers can trace each command and query independently and explain h
 
 ## M7 — Integration Tests & Trade-offs
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Add xUnit integration tests for write invariants, read projections, and separation of responsibilities.
 - Verify deterministic end-to-end behavior with isolated test data and controlled database setup.

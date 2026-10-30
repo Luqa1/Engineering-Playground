@@ -1,6 +1,6 @@
 # CQRS — Product Catalog & Inventory
 
-**Status: Work in Progress.** M1 through M6 are complete. Commands coordinate domain writes, and concrete query handlers return dedicated read DTOs through EF Core projections. M6 reviews these boundaries and verifies reads after each committed write. M7 and M8 remain planned. See [PLAN.md](PLAN.md).
+**Status: Work in Progress.** M1 through M7 are complete. Commands coordinate domain writes, and concrete query handlers return dedicated read DTOs through EF Core projections. M7 verifies these boundaries with PostgreSQL-backed integration tests and evaluates the trade-offs. M8 remains planned. See [PLAN.md](PLAN.md).
 
 ## The Problem
 
@@ -327,15 +327,23 @@ docker compose config
 
 xUnit integration tests use `WebApplicationFactory` and Testcontainers with real PostgreSQL 17. Testcontainers creates and removes its own PostgreSQL container; Compose need not be running. Each test gets a new database, automatically migrated and seeded by API startup. Test data is deterministic and tests do not depend on order. Tests drop their databases, and the fixture disposes its container.
 
+The PostgreSQL fixture is shared within `ProductsTests`, whose tests xUnit runs sequentially. Each test instance uses a unique database name and connection string, so catalog replacements cannot affect another test or the Compose database. Cleanup disposes the HTTP host and clears that database's connection pool before dropping it. No manual database preparation is required.
+
 Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. The existing HTTP write tests now exercise command handlers and verify all product response fields and validation Problem Details. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
 
 Product HTTP tests verify complete list/detail DTOs, seeded list ordering, and same-name ID ties using deliberately scrambled insertion order. The unknown-product test retains the read 404 assertion. Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties, case differences, and supplementary Unicode names; and an empty catalog. Read-after-write tests verify details and dashboard immediately after the price command, then again after the inventory command in all three stock categories. Each GET uses a separate HTTP request scope; a fresh DbContext also verifies the final persisted price and quantity. Write response tests deserialize `ProductResponse` rather than the domain entity, keeping HTTP contracts independent of domain behavior. Existing write and domain tests remain in place.
 
+M7 retains those scenarios instead of duplicating them. It strengthens rejected-write assertions to check both price and quantity, and adds one HTTP scenario for all three query handlers with test-only EF Core interceptors that reject Product materialization (including untracked entities) and synchronous or asynchronous `SaveChanges`. The dashboard fixture includes an attention item, so that projection is exercised too. A fresh DbContext verifies the complete persisted Product after these reads. These are real PostgreSQL operations, without mocks, delays, polling, SQL snapshots, or performance benchmarks.
+
 ## Trade-offs and limits
 
-Concrete command and query handlers add code in exchange for explicit responsibilities and thin controllers. Product queries are tailored to consumers while Product keeps write invariants. Handlers use DbContext directly because EF Core already provides the persistence/query operations this example needs. DTO projections still depend on the mapped schema and provider translation.
+Commands express state-changing intentions: command handlers coordinate loading and saving while Product protects price and inventory invariants. Query handlers return consumer-specific DTOs without exposing domain behavior. This makes write rules and read presentation independently understandable and lets their code evolve at different rates. Both still belong to one application and use one database; this does not provide independent deployment or database scaling.
 
-The benefits are clearer boundaries, domain protection of writes, consumer-specific read models, and the ability to evolve read and write code independently. The costs are additional classes and explicit structure, duplicated representations of some Product fields, and maintenance of separate read DTOs. The query improvements come from projections and SQL aggregation, which are also possible without CQRS; separation alone does not improve performance.
+The cost is more code: commands, command handlers, queries, query handlers, and read DTOs. Fields such as Product ID, name, price, and quantity appear in multiple representations that must be maintained as requirements change. Developers must understand which side owns each responsibility and follow more classes through a request. For a small CRUD application, that extra structure and coordination may cost more than it helps. Handlers use DbContext directly rather than adding repositories or a dispatch framework; DTO projections still depend on the mapped schema and provider translation.
+
+### CQRS versus query optimization
+
+**Efficient SQL projections, filtering, and aggregation do not require CQRS.** A traditional CRUD application can also use `.AsNoTracking().Select(...)`, SQL filters, and database-side aggregation. CQRS provides organizational separation of read and write responsibilities. The query improvements here come from the actual EF Core query design, not automatically from introducing CQRS. No benchmark-based speedup is claimed.
 
 Compared with M3:
 
@@ -346,14 +354,22 @@ Compared with M3:
 
 The dashboard deliberately uses five straightforward SQL queries rather than complex SQL to force one round trip. These statements do not provide a single snapshot if writes occur concurrently; a later read still sees a completed prior write. The attention list and product list are unbounded in this milestone. Exact compatibility with M3's ordinal sorting costs an in-memory sort of attention DTOs. No generic query abstraction or separate read store is needed here.
 
-Concurrency control is outside this PoC. Concurrent read-modify-save inventory adjustments can overwrite one another; this implementation is not safe against all concurrent inventory changes. There are no concurrency tokens, locks, reservations, retries, caching, background workers, messaging, or separate databases.
+### Consistency model
+
+This PoC uses one PostgreSQL database, one application, and synchronous EF Core operations: each command awaits its database save before responding. A successful committed write is visible to subsequent ordinary queries, subject to normal database transaction semantics. No asynchronous read-model synchronization is involved, and CQRS does not inherently require eventual consistency. The dashboard's five statements can still observe different committed states if other writes occur between them.
+
+CQRS does not inherently require MediatR, Event Sourcing, message brokers, microservices, separate databases, read replicas, asynchronous projections, or eventual consistency. Those are separate architectural choices and are absent here.
+
+### Intentional limitations
+
+There are no separate read/write deployments, independent database scaling, asynchronous read-model synchronization, Event Sourcing, caching, optimistic concurrency handling, distributed messaging, or benchmark-based performance comparison. Concurrent read-modify-save inventory adjustments can overwrite one another; this implementation does not protect concurrent inventory allocation. These features remain outside this PoC.
 
 ## When to use this approach
 
-Use concrete commands and queries when write intentions benefit from explicit coordination and presentation queries diverge from domain behavior.
-
-Use database projections and aggregates when views need selected fields, derived values, or summaries without loading domain entities. One database keeps deployment and read-after-write behavior simple.
+Use CQRS when read and write requirements differ significantly, write-side business rules are complex, consumers require specialized representations, or the two sides evolve at different rates. In this catalog, inventory adjustments and price rules belong to Product, while the operator dashboard needs classifications and totals. Explicit separation is useful when it improves maintainability enough to justify the extra code. One database keeps deployment and read-after-write behavior simple.
 
 ## When not to use this approach
 
-Separate handlers may add little value for trivial CRUD with matching read/write needs. Do not use this example as a stock reservation system requiring correct concurrent allocation or a dashboard requiring a single consistent snapshot under concurrent writes. Separate read databases and asynchronous projections add costs that this catalog does not need. M7 and M8 remain future work in the plan.
+CQRS may be unnecessary for simple CRUD when read and write requirements are nearly identical, the domain has few invariants, and dedicated handlers and DTOs add more code than value. It is not a default architecture for every .NET API; the shared model already worked for this small catalog. SQL projections and aggregates remain useful in either design.
+
+Do not use this example as a stock reservation system requiring correct concurrent allocation or a dashboard requiring a single consistent snapshot under concurrent writes. M8 remains planned.
