@@ -1,9 +1,12 @@
+using EngineeringPlayground.Cqrs.Api.Commands;
 using EngineeringPlayground.Cqrs.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddScoped<UpdateProductPriceHandler>();
+builder.Services.AddScoped<AdjustInventoryHandler>();
 builder.Services.AddDbContext<CqrsDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Cqrs")
         ?? throw new InvalidOperationException("ConnectionStrings:Cqrs must be configured.")));

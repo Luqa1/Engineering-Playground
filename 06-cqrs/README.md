@@ -1,6 +1,6 @@
 # CQRS — Product Catalog & Inventory
 
-**Status: Work in Progress.** M1 through M3 are complete. **CQRS is not implemented yet.** The running shared-model application now includes an inventory dashboard; M4 and later milestones remain planned. See [PLAN.md](PLAN.md).
+**Status: Work in Progress.** M1 through M4 are complete. **CQRS separation is not complete yet.** Writes now use explicit commands and handlers; reads still use the shared Product model. M5 and later milestones remain planned. See [PLAN.md](PLAN.md).
 
 ## The Problem
 
@@ -12,7 +12,7 @@ The write model protects business invariants, while the dashboard needs a read-o
 
 ## Shared Model
 
-Both reads and writes use the same `Product` entity and the same `CqrsDbContext`. Controllers load entities directly through EF Core. Write request DTOs contain `price` or `delta`; the existing product endpoints still return the shared Product model. Returning the entity directly is an intentional M2 exception to the repository's usual response DTO convention. The dashboard adds small HTTP response contracts because an aggregate dashboard cannot be represented by one Product. These contracts are not a dedicated CQRS query model. There are no command/query handlers, query services, read repositories, or separate read contexts.
+Both reads and writes use the same `Product` entity and the same `CqrsDbContext`. Read actions still load entities directly through EF Core. Write request DTOs contain `price` or `delta`; writes return a `ProductResponse` DTO with the existing `id`, `name`, `price`, and `availableQuantity` JSON fields. Product reads still return the shared Product model as the intentional M2 exception to the repository's usual response DTO convention. The dashboard retains its small aggregate HTTP response contracts. These contracts are not a dedicated CQRS query model. There are no query handlers, query services, read repositories, or separate read contexts.
 
 Domain methods enforce these rules:
 
@@ -20,7 +20,7 @@ Domain methods enforce these rules:
 - Prices cannot be negative; zero is allowed.
 - Inventory cannot be negative; zero is allowed. Adjustments also reject integer overflow.
 
-`UpdatePrice` and `AdjustInventory` enforce the rules before mutation. The controller handles HTTP concerns and saving; business rules live in Domain. `ILogger<T>` provides application logging.
+`UpdatePrice` and `AdjustInventory` enforce the rules before mutation. Controllers handle HTTP concerns; command handlers coordinate writes and saving; business rules live in Domain. Handlers retain structured write logging through `ILogger<T>`.
 
 `InventoryController` makes one `AsNoTracking().ToListAsync(cancellationToken)` call to load persisted Product entities, then calculates the dashboard in application memory:
 
@@ -42,12 +42,32 @@ The fixed dashboard classifications are mutually exclusive for valid product qua
 
 Each inventory value is `Price * AvailableQuantity`, using decimal arithmetic. The total sums these values across all products, including those in stock. Attention items include only out-of-stock and low-stock products, ordered by status (out of stock first), name ascending using ordinal comparison, then Product ID ascending for ties. `InStock` products contribute to the totals but do not appear in the attention list. Empty catalogs return zero counts/value and an empty list. Stock status, inventory value, and attention flags are not added to Product or persisted; no migration is needed.
 
+## Command Side
+
+A command represents an intention to change business state. `UpdateProductPriceCommand` carries a Product ID and the new price; `AdjustInventoryCommand` carries a Product ID and a signed quantity delta. Both are plain records independent of HTTP and EF Core types.
+
+`ProductsController` constructs a command and calls its concrete `UpdateProductPriceHandler` or `AdjustInventoryHandler`, registered with scoped constructor injection. Each handler loads the Product through `CqrsDbContext`, invokes its domain method, calls `SaveChangesAsync`, and returns a small response DTO. A null result means the Product was not found. Cancellation flows from the controller through the handler to EF Core.
+
+Controllers no longer coordinate write persistence. They map the handler result to the existing 200 response or 404, and domain validation exceptions to the existing 400 Problem Details. Missing request fields still receive 400 through request validation. Invariants remain in Product so every caller uses the same business rules; handlers do not duplicate them. Invalid domain operations fail before mutation or saving.
+
+The current paths are deliberately asymmetric:
+
+```text
+Commands:
+HTTP → Controller → Handler → Product → EF Core / PostgreSQL
+
+Queries:
+HTTP → Controller → Product/DbContext → Response
+```
+
+M4 separates write coordination only. Read actions and dashboard calculations remain unchanged so this refactoring can be assessed independently. The Query Side will be separated in M5; CQRS is not fully implemented. There is no dispatcher, handler interface, repository, or additional project.
+
 ## Solution and architecture
 
 ```text
 EngineeringPlayground.Cqrs.sln
 src/
-  EngineeringPlayground.Cqrs.Api/             Controllers, HTTP requests/responses, startup
+  EngineeringPlayground.Cqrs.Api/             Controllers, commands/handlers, HTTP DTOs, startup
   EngineeringPlayground.Cqrs.Domain/          Product and its invariants
   EngineeringPlayground.Cqrs.Infrastructure/  DbContext, EF mapping, migrations
 tests/
@@ -59,8 +79,10 @@ Project references: API → Domain + Infrastructure; Infrastructure → Domain; 
 ```mermaid
 flowchart LR
     Client --> API[API: ProductsController and InventoryController]
-    API --> Domain[Domain: shared Product model]
-    API --> Infrastructure[Infrastructure: CqrsDbContext and mappings]
+    API -->|Writes| Handlers[API: concrete command handlers]
+    Handlers --> Domain[Domain: shared Product model]
+    Handlers --> Infrastructure[Infrastructure: CqrsDbContext and mappings]
+    API -->|Reads unchanged| Infrastructure
     Infrastructure --> Domain
     Infrastructure --> PostgreSQL[(PostgreSQL)]
 ```
@@ -69,28 +91,33 @@ flowchart LR
 sequenceDiagram
     participant Client
     participant Controller as ProductsController
+    participant Handler as AdjustInventoryHandler
     participant Context as CqrsDbContext
     participant Product
     participant DB as PostgreSQL
     Client->>Controller: PUT /products/{id}/inventory {delta: -3}
-    Controller->>Context: Load Product
+    Controller->>Handler: HandleAsync(AdjustInventoryCommand, cancellationToken)
+    Handler->>Context: Load Product
     Context->>DB: SELECT product
     DB-->>Context: Product row
-    Context-->>Controller: Shared Product entity
-    Controller->>Product: AdjustInventory(-3)
+    Context-->>Handler: Shared Product entity
+    Handler->>Product: AdjustInventory(-3)
     alt Resulting quantity is valid
-        Product-->>Controller: Updated quantity
-        Controller->>Context: SaveChangesAsync
+        Product-->>Handler: Updated quantity
+        Handler->>Context: SaveChangesAsync
         Context->>DB: UPDATE product
         DB-->>Context: Saved
-        Controller-->>Client: 200 + Product
+        Context-->>Handler: Changes saved
+        Handler-->>Controller: ProductResponse
+        Controller-->>Client: 200 + unchanged product JSON
     else Negative quantity or integer overflow
-        Product-->>Controller: Reject adjustment
+        Product-->>Handler: Reject adjustment
+        Handler-->>Controller: ArgumentOutOfRangeException
         Controller-->>Client: 400 Problem Details
     end
 ```
 
-An unknown product returns 404 before invoking a domain operation. Product reads use the same context and entity, returning Product directly.
+For an unknown product the handler returns null, and the controller returns 404 before any domain operation. Product reads use the same context and entity, returning Product directly.
 
 The dashboard uses the same persistence path with an aggregate HTTP response:
 
@@ -150,8 +177,8 @@ Only the API runs migrations, and only when the environment is **not Production*
 |---|---|---|
 | GET | `/products` | 200, all products ordered by name |
 | GET | `/products/{id}` | 200, one product; 404 if unknown |
-| PUT | `/products/{id}/price` | `{ "price": 319.00 }`; 200 with updated Product |
-| PUT | `/products/{id}/inventory` | `{ "delta": -3 }`; 200 with updated Product |
+| PUT | `/products/{id}/price` | `{ "price": 319.00 }`; 200 with updated product JSON (`ProductResponse`) |
+| PUT | `/products/{id}/inventory` | `{ "delta": -3 }`; 200 with updated product JSON (`ProductResponse`) |
 | GET | `/inventory/dashboard` | 200, counts, total inventory value, sorted attention items |
 
 Both writes return 404 for an unknown product. Invalid or missing input returns 400; a rejected domain operation leaves persisted state unchanged. Positive deltas increase inventory and negative deltas decrease it.
@@ -232,13 +259,13 @@ docker compose config
 
 xUnit integration tests use `WebApplicationFactory` and Testcontainers with real PostgreSQL 17. Testcontainers creates and removes its own PostgreSQL container; Compose need not be running. Each test gets a new database, automatically migrated and seeded by API startup. Test data is deterministic and tests do not depend on order. Tests drop their databases, and the fixture disposes its container.
 
-Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
+Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. The existing HTTP write tests now exercise command handlers and verify all product response fields and validation Problem Details. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
 
 Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties; price/inventory writes followed by fresh dashboard reads in all three stock categories; and an empty catalog. Existing M2 tests retain their seeded setup and assertions.
 
 ## Trade-offs and limits
 
-The shared model keeps this application small and easy to trace, and loading Product entities for this dashboard is acceptable for a small catalog. Direct DbContext access couples controllers to persistence, and returning Product from the original endpoints couples their response shapes to the domain entity.
+The shared model keeps this application small and easy to trace, and loading Product entities for this dashboard is acceptable for a small catalog. Concrete commands and handlers add a little code in exchange for clear write intent and a place to coordinate persistence independently of HTTP. Direct DbContext access still couples read actions to persistence, and returning Product from product reads couples their response shapes to the domain entity. Write handlers also use the context directly because EF Core already provides the persistence coordination these single-save operations need.
 
 The dashboard makes a concrete read/write tension visible as the catalog grows:
 
@@ -247,7 +274,7 @@ The dashboard makes a concrete read/write tension visible as the catalog grows:
 - Read-specific calculations and sorting live alongside HTTP/application concerns.
 - The read path remains coupled to the shared Product persistence model.
 
-A dedicated query model with database projections could retrieve and aggregate just the required data, and separate those read concerns from writes. It is future work, not part of M3. The current implementation remains correct; CQRS is justified only when the complexity warrants the additional code, and query design determines performance.
+A dedicated query model with database projections could retrieve and aggregate just the required data, and separate those read concerns from writes. It is future work in M5. The current implementation remains correct; CQRS is justified only when the complexity warrants the additional code, and query design determines performance.
 
 Concurrency control is outside this PoC. Concurrent read-modify-save inventory adjustments can overwrite one another; this implementation is not safe against all concurrent inventory changes. There are no concurrency tokens, locks, reservations, retries, caching, background workers, messaging, or separate databases.
 
@@ -255,6 +282,8 @@ Concurrency control is outside this PoC. Concurrent read-modify-save inventory a
 
 Use a shared model for a small catalog with straightforward reads and writes, where separating responsibilities would add code without clear benefit.
 
+Use this command-side step when write intentions and coordination benefit from being explicit while reads can still use the existing model.
+
 ## When not to use this baseline
 
-Reconsider the shared response/entity shape when presentation queries diverge from business behavior or whole-catalog materialization becomes costly. Do not use this baseline as a stock reservation system requiring correct concurrent allocation. CQRS separation and read projections remain future work in the plan.
+Reconsider the shared response/entity shape when presentation queries diverge from business behavior or whole-catalog materialization becomes costly. Separate handlers may add little value for trivial CRUD with no coordination needs. Do not use this baseline as a stock reservation system requiring correct concurrent allocation. Query-side separation and read projections remain future work in the plan.

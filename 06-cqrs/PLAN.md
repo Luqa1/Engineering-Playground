@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** M1 through M3 are complete. M4 and later milestones remain planned; CQRS is not implemented yet.
+**Status: Work in Progress.** M1 through M4 are complete. M5 and later milestones remain planned; CQRS separation is not complete yet.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -38,7 +38,7 @@ Completion: a working example makes the motivation for separating responsibiliti
 
 ## M4 — Command Side
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Introduce explicit write operations for product price updates and inventory adjustments.
 - Preserve domain invariants and independent input validation.

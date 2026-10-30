@@ -1,4 +1,6 @@
+using EngineeringPlayground.Cqrs.Api.Commands;
 using EngineeringPlayground.Cqrs.Api.Requests;
+using EngineeringPlayground.Cqrs.Api.Responses;
 using EngineeringPlayground.Cqrs.Domain;
 using EngineeringPlayground.Cqrs.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
@@ -11,12 +13,15 @@ namespace EngineeringPlayground.Cqrs.Api.Controllers;
 public sealed class ProductsController : ControllerBase
 {
     private readonly CqrsDbContext _database;
-    private readonly ILogger<ProductsController> _logger;
+    private readonly UpdateProductPriceHandler _updateProductPriceHandler;
+    private readonly AdjustInventoryHandler _adjustInventoryHandler;
 
-    public ProductsController(CqrsDbContext database, ILogger<ProductsController> logger)
+    public ProductsController(CqrsDbContext database,
+        UpdateProductPriceHandler updateProductPriceHandler, AdjustInventoryHandler adjustInventoryHandler)
     {
         _database = database;
-        _logger = logger;
+        _updateProductPriceHandler = updateProductPriceHandler;
+        _adjustInventoryHandler = adjustInventoryHandler;
     }
 
     [HttpGet]
@@ -38,51 +43,44 @@ public sealed class ProductsController : ControllerBase
     }
 
     [HttpPut("{id:guid}/price")]
-    public async Task<ActionResult<Product>> UpdatePrice(
+    public async Task<ActionResult<ProductResponse>> UpdatePrice(
         Guid id, UpdatePriceRequest request, CancellationToken cancellationToken)
     {
-        var product = await _database.Products.FindAsync([id], cancellationToken);
-        if (product is null)
-        {
-            return NotFound();
-        }
-
         try
         {
-            product.UpdatePrice(request.Price!.Value);
+            var command = new UpdateProductPriceCommand(id, request.Price!.Value);
+            var result = await _updateProductPriceHandler.HandleAsync(command, cancellationToken);
+            if (result is null)
+            {
+                return NotFound();
+            }
+
+            return result;
         }
         catch (ArgumentOutOfRangeException exception)
         {
             return Problem(statusCode: StatusCodes.Status400BadRequest, detail: exception.Message);
         }
-
-        await _database.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Updated price for product {ProductId} to {Price}.", id, product.Price);
-        return product;
     }
 
     [HttpPut("{id:guid}/inventory")]
-    public async Task<ActionResult<Product>> AdjustInventory(
+    public async Task<ActionResult<ProductResponse>> AdjustInventory(
         Guid id, AdjustInventoryRequest request, CancellationToken cancellationToken)
     {
-        var product = await _database.Products.FindAsync([id], cancellationToken);
-        if (product is null)
-        {
-            return NotFound();
-        }
-
         try
         {
-            product.AdjustInventory(request.Delta!.Value);
+            var command = new AdjustInventoryCommand(id, request.Delta!.Value);
+            var result = await _adjustInventoryHandler.HandleAsync(command, cancellationToken);
+            if (result is null)
+            {
+                return NotFound();
+            }
+
+            return result;
         }
         catch (ArgumentOutOfRangeException exception)
         {
             return Problem(statusCode: StatusCodes.Status400BadRequest, detail: exception.Message);
         }
-
-        await _database.SaveChangesAsync(cancellationToken);
-        _logger.LogInformation("Adjusted inventory for product {ProductId} by {Delta} to {Quantity}.",
-            id, request.Delta, product.AvailableQuantity);
-        return product;
     }
 }

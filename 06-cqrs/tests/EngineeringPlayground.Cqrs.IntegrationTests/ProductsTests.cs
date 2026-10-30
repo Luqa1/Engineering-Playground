@@ -4,6 +4,7 @@ using EngineeringPlayground.Cqrs.Api.Responses;
 using EngineeringPlayground.Cqrs.Domain;
 using EngineeringPlayground.Cqrs.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -94,7 +95,11 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var returned = await response.Content.ReadFromJsonAsync<Product>();
-        Assert.Equal(price, returned!.Price);
+        Assert.NotNull(returned);
+        Assert.Equal(KeyboardId, returned.Id);
+        Assert.Equal("Mechanical Keyboard", returned.Name);
+        Assert.Equal(price, returned.Price);
+        Assert.Equal(15, returned.AvailableQuantity);
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(price, persisted.Price);
@@ -111,7 +116,11 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var returned = await response.Content.ReadFromJsonAsync<Product>();
-        Assert.Equal(expectedQuantity, returned!.AvailableQuantity);
+        Assert.NotNull(returned);
+        Assert.Equal(KeyboardId, returned.Id);
+        Assert.Equal("Mechanical Keyboard", returned.Name);
+        Assert.Equal(299.00m, returned.Price);
+        Assert.Equal(expectedQuantity, returned.AvailableQuantity);
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(expectedQuantity, persisted.AvailableQuantity);
@@ -127,6 +136,10 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/inventory", new { delta });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Equal(400, problem.Status);
+        Assert.Contains("The resulting inventory quantity must be between zero and Int32.MaxValue.", problem.Detail);
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(15, persisted.AvailableQuantity);
@@ -138,6 +151,10 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price = -1.00m });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Equal(400, problem.Status);
+        Assert.Contains("price", problem.Detail);
         await using var database = CreateDatabase();
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(299.00m, persisted.Price);
