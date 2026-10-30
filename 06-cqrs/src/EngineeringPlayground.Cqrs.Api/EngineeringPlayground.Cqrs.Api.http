@@ -17,3 +17,6 @@ PUT {{host}}/products/{{productId}}/inventory
 Content-Type: application/json
 
 { "delta": -3 }
+
+###
+GET {{host}}/inventory/dashboard

@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** M1 and M2 are complete. M3 and later milestones remain planned; CQRS is not implemented yet.
+**Status: Work in Progress.** M1 through M3 are complete. M4 and later milestones remain planned; CQRS is not implemented yet.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -28,7 +28,7 @@ Completion: the shared-model application runs locally with one command and no ma
 
 ## M3 — The Read/Write Model Problem
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Introduce inventory dashboard requirements combining product information and stock availability.
 - Demonstrate how presentation needs differ from business-oriented writes and expose limitations of the shared model.

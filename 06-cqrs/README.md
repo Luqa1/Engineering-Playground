@@ -1,16 +1,18 @@
 # CQRS — Product Catalog & Inventory
 
-**Status: Work in Progress.** M1 and M2 are complete. **CQRS is not implemented yet.** This is a running shared-model baseline; M3 and later milestones remain planned. See [PLAN.md](PLAN.md).
+**Status: Work in Progress.** M1 through M3 are complete. **CQRS is not implemented yet.** The running shared-model application now includes an inventory dashboard; M4 and later milestones remain planned. See [PLAN.md](PLAN.md).
 
-## Scenario and motivation
+## The Problem
 
 A small catalog tracks each product's ID, name, price, and available quantity. Users can list products, inspect one product, change its price, and adjust its inventory by a signed delta.
 
-Writes must preserve business rules, while reads currently need only the same four product fields. A single model is sufficient for this baseline. As presentation requirements diverge from business behavior, separate read and write responsibilities can become useful: that is the motivation for CQRS and the subject of later milestones. There is no inventory dashboard yet.
+The warehouse operator also needs to know how many products exist, how many are out of stock or low on stock, the total inventory value, and which products need attention. These questions introduce counts, aggregations, calculated values, classifications, and sorting. They do not add write-side business behavior.
 
-## Current implementation
+The write model protects business invariants, while the dashboard needs a read-optimized representation. CQRS allows these responsibilities to evolve independently when the complexity justifies the separation. It does not require separate databases or automatically improve performance: performance depends on the actual query design. The shared model still works correctly for this small catalog.
 
-Both reads and writes use the same `Product` entity and the same `CqrsDbContext`. Controllers load entities directly through EF Core. Write request DTOs contain `price` or `delta`; successful endpoints return the shared Product model. Returning the entity directly is an intentional M2 exception to the repository's usual response DTO convention. No dedicated read DTOs, services, repositories, or handlers have been introduced.
+## Shared Model
+
+Both reads and writes use the same `Product` entity and the same `CqrsDbContext`. Controllers load entities directly through EF Core. Write request DTOs contain `price` or `delta`; the existing product endpoints still return the shared Product model. Returning the entity directly is an intentional M2 exception to the repository's usual response DTO convention. The dashboard adds small HTTP response contracts because an aggregate dashboard cannot be represented by one Product. These contracts are not a dedicated CQRS query model. There are no command/query handlers, query services, read repositories, or separate read contexts.
 
 Domain methods enforce these rules:
 
@@ -20,12 +22,32 @@ Domain methods enforce these rules:
 
 `UpdatePrice` and `AdjustInventory` enforce the rules before mutation. The controller handles HTTP concerns and saving; business rules live in Domain. `ILogger<T>` provides application logging.
 
+`InventoryController` makes one `AsNoTracking().ToListAsync(cancellationToken)` call to load persisted Product entities, then calculates the dashboard in application memory:
+
+```text
+Load Product entities
+      ↓
+Calculate dashboard values
+      ↓
+Return dashboard response
+```
+
+The fixed dashboard classifications are mutually exclusive for valid product quantities:
+
+| StockStatus | AvailableQuantity |
+|---|---|
+| `OutOfStock` | 0 |
+| `LowStock` | 1 through 5 inclusive |
+| `InStock` | Greater than 5 |
+
+Each inventory value is `Price * AvailableQuantity`, using decimal arithmetic. The total sums these values across all products, including those in stock. Attention items include only out-of-stock and low-stock products, ordered by status (out of stock first), name ascending using ordinal comparison, then Product ID ascending for ties. `InStock` products contribute to the totals but do not appear in the attention list. Empty catalogs return zero counts/value and an empty list. Stock status, inventory value, and attention flags are not added to Product or persisted; no migration is needed.
+
 ## Solution and architecture
 
 ```text
 EngineeringPlayground.Cqrs.sln
 src/
-  EngineeringPlayground.Cqrs.Api/             Controllers, write requests, startup
+  EngineeringPlayground.Cqrs.Api/             Controllers, HTTP requests/responses, startup
   EngineeringPlayground.Cqrs.Domain/          Product and its invariants
   EngineeringPlayground.Cqrs.Infrastructure/  DbContext, EF mapping, migrations
 tests/
@@ -36,7 +58,7 @@ Project references: API → Domain + Infrastructure; Infrastructure → Domain; 
 
 ```mermaid
 flowchart LR
-    Client --> API[API: ProductsController]
+    Client --> API[API: ProductsController and InventoryController]
     API --> Domain[Domain: shared Product model]
     API --> Infrastructure[Infrastructure: CqrsDbContext and mappings]
     Infrastructure --> Domain
@@ -68,7 +90,24 @@ sequenceDiagram
     end
 ```
 
-An unknown product returns 404 before invoking a domain operation. Reads use the same context and entity, returning Product directly.
+An unknown product returns 404 before invoking a domain operation. Product reads use the same context and entity, returning Product directly.
+
+The dashboard uses the same persistence path with an aggregate HTTP response:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Controller as InventoryController
+    participant Context as CqrsDbContext
+    participant DB as PostgreSQL
+    Client->>Controller: GET /inventory/dashboard
+    Controller->>Context: Products.AsNoTracking().ToListAsync()
+    Context->>DB: SELECT products
+    DB-->>Context: Product rows
+    Context-->>Controller: Shared Product entities
+    Note over Controller: Calculate counts, decimal values, classifications; sort attention items
+    Controller-->>Client: 200 + InventoryDashboardResponse
+```
 
 ## Run locally
 
@@ -113,6 +152,7 @@ Only the API runs migrations, and only when the environment is **not Production*
 | GET | `/products/{id}` | 200, one product; 404 if unknown |
 | PUT | `/products/{id}/price` | `{ "price": 319.00 }`; 200 with updated Product |
 | PUT | `/products/{id}/inventory` | `{ "delta": -3 }`; 200 with updated Product |
+| GET | `/inventory/dashboard` | 200, counts, total inventory value, sorted attention items |
 
 Both writes return 404 for an unknown product. Invalid or missing input returns 400; a rejected domain operation leaves persisted state unchanged. Positive deltas increase inventory and negative deltas decrease it.
 
@@ -126,6 +166,58 @@ curl -X PUT http://localhost:8086/products/11111111-1111-1111-1111-111111111111/
 ```
 
 The API project's `.http` file contains equivalent requests for an HTTP editor.
+
+## Example Scenario
+
+With a fresh database, the seeded products have quantities 15, 30, and 8, so none need attention. This request:
+
+```bash
+curl http://localhost:8086/inventory/dashboard
+```
+
+returns:
+
+```json
+{
+  "totalProducts": 3,
+  "outOfStockCount": 0,
+  "lowStockCount": 0,
+  "totalInventoryValue": 11947.00,
+  "productsNeedingAttention": []
+}
+```
+
+Starting from that seed, update the USB-C Dock price and reduce its inventory to the low-stock boundary:
+
+```bash
+curl -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/price \
+  -H "Content-Type: application/json" -d '{"price":459.00}'
+curl -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/inventory \
+  -H "Content-Type: application/json" -d '{"delta":-3}'
+curl http://localhost:8086/inventory/dashboard
+```
+
+The dashboard reads the persisted changes immediately:
+
+```json
+{
+  "totalProducts": 3,
+  "outOfStockCount": 0,
+  "lowStockCount": 1,
+  "totalInventoryValue": 10650.00,
+  "productsNeedingAttention": [
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "USB-C Dock",
+      "availableQuantity": 5,
+      "stockStatus": "LowStock",
+      "inventoryValue": 2295.00
+    }
+  ]
+}
+```
+
+The total is `299.00 * 15 + 129.00 * 30 + 459.00 * 5 = 10650.00`. A further inventory adjustment of `-5` makes the dock `OutOfStock` with value zero. The existing domain methods protect valid price and quantity; the dashboard derives its presentation from that same state. JSON numbers may omit trailing zeros.
 
 ## Tests and validation
 
@@ -142,9 +234,20 @@ xUnit integration tests use `WebApplicationFactory` and Testcontainers with real
 
 Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
 
+Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties; price/inventory writes followed by fresh dashboard reads in all three stock categories; and an empty catalog. Existing M2 tests retain their seeded setup and assertions.
+
 ## Trade-offs and limits
 
-The shared model keeps this application small and easy to trace. Direct DbContext access couples controllers to persistence, and returning Product couples the API response shape to the domain entity. These are deliberate baseline choices, with no query projections or separate read model yet.
+The shared model keeps this application small and easy to trace, and loading Product entities for this dashboard is acceptable for a small catalog. Direct DbContext access couples controllers to persistence, and returning Product from the original endpoints couples their response shapes to the domain entity.
+
+The dashboard makes a concrete read/write tension visible as the catalog grows:
+
+- Full Product entities are loaded even though the dashboard does not need write behavior or every field for every result.
+- Aggregation work and entity materialization consume application memory across the entire catalog.
+- Read-specific calculations and sorting live alongside HTTP/application concerns.
+- The read path remains coupled to the shared Product persistence model.
+
+A dedicated query model with database projections could retrieve and aggregate just the required data, and separate those read concerns from writes. It is future work, not part of M3. The current implementation remains correct; CQRS is justified only when the complexity warrants the additional code, and query design determines performance.
 
 Concurrency control is outside this PoC. Concurrent read-modify-save inventory adjustments can overwrite one another; this implementation is not safe against all concurrent inventory changes. There are no concurrency tokens, locks, reservations, retries, caching, background workers, messaging, or separate databases.
 
@@ -154,4 +257,4 @@ Use a shared model for a small catalog with straightforward reads and writes, wh
 
 ## When not to use this baseline
 
-Reconsider the shared response/entity shape when presentation queries diverge from business behavior. Do not use this baseline as a stock reservation system requiring correct concurrent allocation. CQRS separation, read projections, and the dashboard remain future work in the plan.
+Reconsider the shared response/entity shape when presentation queries diverge from business behavior or whole-catalog materialization becomes costly. Do not use this baseline as a stock reservation system requiring correct concurrent allocation. CQRS separation and read projections remain future work in the plan.

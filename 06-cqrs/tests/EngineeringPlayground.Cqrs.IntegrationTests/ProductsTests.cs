@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using EngineeringPlayground.Cqrs.Api.Responses;
 using EngineeringPlayground.Cqrs.Domain;
 using EngineeringPlayground.Cqrs.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
@@ -182,6 +183,122 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         await using var verification = CreateDatabase();
         Assert.Equal(3, await verification.Products.CountAsync());
         Assert.Equal(319.00m, (await verification.Products.SingleAsync(product => product.Id == KeyboardId)).Price);
+    }
+
+    [Fact]
+    public async Task DashboardSummarizesPersistedProductsAtStockBoundaries()
+    {
+        await ReplaceProductsAsync(
+            new Product(Guid.Parse("10000000-0000-0000-0000-000000000001"), "Empty", 99.99m, 0),
+            new Product(Guid.Parse("10000000-0000-0000-0000-000000000002"), "One left", 12.34m, 1),
+            new Product(Guid.Parse("10000000-0000-0000-0000-000000000003"), "Five left", 2.55m, 5),
+            new Product(Guid.Parse("10000000-0000-0000-0000-000000000004"), "Six left", 10.01m, 6),
+            new Product(Guid.Parse("10000000-0000-0000-0000-000000000005"), "Free item", 0m, 2));
+
+        var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+
+        Assert.NotNull(dashboard);
+        Assert.Equal(5, dashboard.TotalProducts);
+        Assert.Equal(1, dashboard.OutOfStockCount);
+        Assert.Equal(3, dashboard.LowStockCount);
+        // 99.99 * 0 + 12.34 * 1 + 2.55 * 5 + 10.01 * 6 + 0 * 2 = 85.15.
+        Assert.Equal(85.15m, dashboard.TotalInventoryValue);
+    }
+
+    [Fact]
+    public async Task DashboardAttentionListClassifiesValuesAndSortsByStatusNameThenId()
+    {
+        var emptyAlpha = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        var emptyZulu = Guid.Parse("20000000-0000-0000-0000-000000000002");
+        var lowAlphaFirst = Guid.Parse("20000000-0000-0000-0000-000000000003");
+        var lowAlphaSecond = Guid.Parse("20000000-0000-0000-0000-000000000004");
+        var lowZulu = Guid.Parse("20000000-0000-0000-0000-000000000005");
+        // Deliberately scramble insertion order and give same-name products different quantities.
+        await ReplaceProductsAsync(
+            new Product(lowAlphaSecond, "Alpha", 2.50m, 1),
+            new Product(lowZulu, "Zulu", 12.34m, 1),
+            new Product(emptyZulu, "Zulu", 99.99m, 0),
+            new Product(Guid.Parse("20000000-0000-0000-0000-000000000006"), "In stock", 10m, 6),
+            new Product(lowAlphaFirst, "Alpha", 1.25m, 5),
+            new Product(emptyAlpha, "Alpha", 5m, 0));
+
+        var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+
+        Assert.NotNull(dashboard);
+        InventoryAttentionItemResponse[] expected =
+        [
+            new(emptyAlpha, "Alpha", 0, "OutOfStock", 0m),
+            new(emptyZulu, "Zulu", 0, "OutOfStock", 0m),
+            new(lowAlphaFirst, "Alpha", 5, "LowStock", 6.25m),
+            new(lowAlphaSecond, "Alpha", 1, "LowStock", 2.50m),
+            new(lowZulu, "Zulu", 1, "LowStock", 12.34m)
+        ];
+        Assert.Equal(expected, dashboard.ProductsNeedingAttention);
+    }
+
+    [Theory]
+    [InlineData(-1, 5, 1, 126.85)]
+    [InlineData(-6, 0, 0, 0)]
+    [InlineData(1, 7, 0, 177.59)]
+    public async Task DashboardReflectsPersistedPriceAndInventoryWrites(
+        int delta, int expectedQuantity, int expectedLowStockCount, decimal expectedValue)
+    {
+        await ReplaceProductsAsync(new Product(KeyboardId, "Mechanical Keyboard", 10m, 6));
+        var before = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+        Assert.NotNull(before);
+        Assert.Equal(60m, before.TotalInventoryValue);
+        Assert.Empty(before.ProductsNeedingAttention);
+
+        var priceResponse = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price = 25.37m });
+        Assert.Equal(HttpStatusCode.OK, priceResponse.StatusCode);
+        var inventoryResponse = await _client.PutAsJsonAsync($"/products/{KeyboardId}/inventory", new { delta });
+        Assert.Equal(HttpStatusCode.OK, inventoryResponse.StatusCode);
+
+        var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+
+        Assert.NotNull(dashboard);
+        Assert.Equal(1, dashboard.TotalProducts);
+        Assert.Equal(expectedQuantity == 0 ? 1 : 0, dashboard.OutOfStockCount);
+        Assert.Equal(expectedLowStockCount, dashboard.LowStockCount);
+        Assert.Equal(expectedValue, dashboard.TotalInventoryValue);
+        if (expectedQuantity <= 5)
+        {
+            var attentionItem = Assert.Single(dashboard.ProductsNeedingAttention);
+            Assert.Equal(new InventoryAttentionItemResponse(KeyboardId, "Mechanical Keyboard", expectedQuantity,
+                expectedQuantity == 0 ? "OutOfStock" : "LowStock", expectedValue), attentionItem);
+        }
+        else
+        {
+            Assert.Empty(dashboard.ProductsNeedingAttention);
+        }
+
+        await using var verification = CreateDatabase();
+        var persisted = await verification.Products.SingleAsync(product => product.Id == KeyboardId);
+        Assert.Equal(25.37m, persisted.Price);
+        Assert.Equal(expectedQuantity, persisted.AvailableQuantity);
+    }
+
+    [Fact]
+    public async Task DashboardReturnsZeroSummaryAndEmptyAttentionListForEmptyCatalog()
+    {
+        await ReplaceProductsAsync();
+
+        var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+
+        Assert.NotNull(dashboard);
+        Assert.Equal(0, dashboard.TotalProducts);
+        Assert.Equal(0, dashboard.OutOfStockCount);
+        Assert.Equal(0, dashboard.LowStockCount);
+        Assert.Equal(0m, dashboard.TotalInventoryValue);
+        Assert.Empty(dashboard.ProductsNeedingAttention);
+    }
+
+    private async Task ReplaceProductsAsync(params Product[] products)
+    {
+        await using var database = CreateDatabase();
+        await database.Products.ExecuteDeleteAsync();
+        database.Products.AddRange(products);
+        await database.SaveChangesAsync();
     }
 
     private CqrsDbContext CreateDatabase() => new(new DbContextOptionsBuilder<CqrsDbContext>()
