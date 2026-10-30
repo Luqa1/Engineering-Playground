@@ -1,0 +1,19 @@
+@host = http://localhost:8086
+@productId = 11111111-1111-1111-1111-111111111111
+
+GET {{host}}/products
+
+###
+GET {{host}}/products/{{productId}}
+
+###
+PUT {{host}}/products/{{productId}}/price
+Content-Type: application/json
+
+{ "price": 319.00 }
+
+###
+PUT {{host}}/products/{{productId}}/inventory
+Content-Type: application/json
+
+{ "delta": -3 }

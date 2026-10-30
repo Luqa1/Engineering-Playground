@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** Only M1 is complete. All application behavior below is planned.
+**Status: Work in Progress.** M1 and M2 are complete. M3 and later milestones remain planned; CQRS is not implemented yet.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -15,10 +15,10 @@ The scenario is a Product Catalog & Inventory Dashboard. The educational goal is
 
 ## M2 — Running Application
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Create a small .NET 10 Product Catalog API using ASP.NET Core Controllers, PostgreSQL, and EF Core.
-- Use a shared domain/persistence model for reads and writes, with request/response DTOs at API boundaries.
+- Use a shared Product domain/persistence model for reads and writes, with request DTOs for writes. M2 intentionally returns Product directly, as an explicit exception to the repository's response DTO convention.
 - Keep controllers thin and use constructor injection; put business rules in Domain and persistence in Infrastructure.
 - Keep DbContext in Infrastructure and entity mapping in `IEntityTypeConfiguration<T>` implementations outside `Program.cs`.
 - Provide `docker compose up --build` with API and database services, practical healthchecks, and reliable startup ordering.
