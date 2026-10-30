@@ -87,15 +87,15 @@ Completion: integration tests verify the scenarios and the documented trade-offs
 
 Completion: documentation matches the working example and explains the full educational progression.
 
-Final Review & Polish will be a separate task after M8.
+Final Review & Polish is a separate review of M1–M8, not an additional milestone.
 
-## Planned Project Boundaries
+## Final Project Boundaries
 
-Create projects only in later milestones when needed:
+The completed implementation uses these projects:
 
-- `EngineeringPlayground.Cqrs.Api`: Controllers and composition; depends on Domain and Infrastructure.
+- `EngineeringPlayground.Cqrs.Api`: Controllers, command/query handlers, read DTO projections, and composition; depends on Domain and Infrastructure.
 - `EngineeringPlayground.Cqrs.Domain`: write-side business rules; no project dependencies.
-- `EngineeringPlayground.Cqrs.Infrastructure`: persistence and query projections; depends on Domain.
+- `EngineeringPlayground.Cqrs.Infrastructure`: DbContext, entity mapping, and migrations; depends on Domain.
 - `EngineeringPlayground.Cqrs.IntegrationTests`: xUnit integration verification.
 
 Do not add an Application project solely for architectural purity, shared libraries across PoCs, or separately deployable read/write services.

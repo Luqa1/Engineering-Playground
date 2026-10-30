@@ -91,10 +91,10 @@ Commands are plain records representing intent. For example, `PUT /products/{id}
 Product protects the rules before mutation:
 
 - Names cannot be null, empty, or whitespace; construction trims them.
-- Prices cannot be negative; zero is valid.
+- Prices range from zero to `9999999999999999.99` and have at most two decimal places, matching PostgreSQL `numeric(18,2)`. Inputs requiring rounding are rejected before mutation.
 - Quantities cannot be negative; adjustments also reject results greater than `Int32.MaxValue`.
 
-Handlers return null for unknown IDs, which the controller maps to 404. Domain range exceptions become 400 Problem Details. Required nullable request properties distinguish missing values from valid zeros; ASP.NET Core validates them before handler execution. Rejected operations do not save changes.
+Handlers return null for unknown IDs, which the controller maps to 404. Domain range exceptions become 400 Problem Details. Required nullable request properties distinguish missing values from valid zeros; ASP.NET Core validates them before handler execution. Rejected operations do not save changes. Unexpected request failures are logged by ASP.NET Core and return generic 500 Problem Details without exception or connection details, including in Development.
 
 ## Query Side
 
@@ -174,7 +174,7 @@ docker compose up --build
 
 ### Persistence and migrations
 
-Infrastructure contains `ProductConfiguration : IEntityTypeConfiguration<Product>` and the generated `InitialCreate` migration. Mapping defines a UUID primary key, required text name, `numeric(18,2)` price, and integer quantity. Use prices with at most two decimal places; PostgreSQL stores them at that scale.
+Infrastructure contains `ProductConfiguration : IEntityTypeConfiguration<Product>` and the generated `InitialCreate` migration. Mapping defines a UUID primary key, required text name, `numeric(18,2)` price, and integer quantity. Product enforces the price range and scale before saving, so write responses and persisted prices match without database rounding. Domain methods enforce invariants; direct SQL writes bypass them, and this schema does not add business check constraints.
 
 The initial migration inserts the three products above through EF Core `HasData`. Migration history prevents subsequent starts from duplicating seeds or resetting edits. `EnsureCreated()` is not used.
 
@@ -315,7 +315,7 @@ xUnit tests use `WebApplicationFactory` and Testcontainers with real PostgreSQL 
 Coverage includes:
 
 - Command persistence, full write DTOs, positive/negative adjustments, zero boundaries, rejected negative values and overflow, missing fields, and unknown IDs.
-- Domain construction invariants, repeatable migrations without resetting seeds, and Production startup without a migration connection.
+- Domain construction invariants and unchanged state after rejected mutations; price scale/range rejection and exact persistence at valid price boundaries; repeatable migrations without resetting seeds; Production startup without a migration connection; generic error responses after a real database failure in Development.
 - Product list/details contracts, name/ID ordering, dashboard totals, classification boundaries at 0, 1, 5, and 6, zero-price items, and empty catalogs.
 - Attention membership, calculated values, and ordering with same-name ID ties, case differences, and Unicode names.
 - Details and dashboard reads immediately after price and inventory writes, plus fresh-context persistence verification.

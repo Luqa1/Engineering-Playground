@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using EngineeringPlayground.Cqrs.Api.Queries.Models;
@@ -215,6 +216,70 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
         Assert.Equal(299.00m, persisted.Price);
         Assert.Equal(15, persisted.AvailableQuantity);
+    }
+
+    [Theory]
+    [InlineData("1.234")]
+    [InlineData("9999999999999999.995")]
+    [InlineData("10000000000000000")]
+    [InlineData("79228162514264337593543950335")]
+    public async Task UnrepresentablePriceIsRejectedWithoutChangingPersistedPrice(string value)
+    {
+        var price = decimal.Parse(value, CultureInfo.InvariantCulture);
+        var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Equal(400, problem.Status);
+        await using var database = CreateDatabase();
+        var persisted = await database.Products.SingleAsync(product => product.Id == KeyboardId);
+        Assert.Equal(299.00m, persisted.Price);
+        Assert.Equal(15, persisted.AvailableQuantity);
+    }
+
+    [Theory]
+    [InlineData("0.01")]
+    [InlineData("9999999999999999.99")]
+    public async Task RepresentablePriceMatchesWriteResponseAndSubsequentRead(string value)
+    {
+        var price = decimal.Parse(value, CultureInfo.InvariantCulture);
+        var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var returned = await response.Content.ReadFromJsonAsync<ProductResponse>();
+        Assert.NotNull(returned);
+        Assert.Equal(price, returned.Price);
+        var details = await _client.GetFromJsonAsync<ProductDetails>($"/products/{KeyboardId}");
+        Assert.NotNull(details);
+        Assert.Equal(price, details.Price);
+        await using var database = CreateDatabase();
+        Assert.Equal(price, (await database.Products.SingleAsync(product => product.Id == KeyboardId)).Price);
+    }
+
+    [Fact]
+    public async Task DevelopmentDatabaseFailureReturnsGenericProblemDetails()
+    {
+        await using var developmentFactory = _factory.WithWebHostBuilder(builder =>
+            builder.UseEnvironment("Development"));
+        using var client = developmentFactory.CreateClient();
+        await using (var database = CreateDatabase())
+        {
+            // Break only this test's isolated database after successful startup.
+            await database.Database.ExecuteSqlRawAsync("DROP TABLE \"Products\"");
+        }
+
+        var response = await client.GetAsync("/products");
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Equal(500, problem.Status);
+        Assert.Null(problem.Detail);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Npgsql", body);
+        Assert.DoesNotContain(_connectionString, body);
     }
 
     [Theory]

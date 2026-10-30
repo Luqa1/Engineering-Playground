@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+builder.Services.AddProblemDetails();
 builder.Services.AddScoped<UpdateProductPriceHandler>();
 builder.Services.AddScoped<AdjustInventoryHandler>();
 builder.Services.AddScoped<GetProductsHandler>();
@@ -16,6 +17,7 @@ builder.Services.AddDbContext<CqrsDbContext>(options =>
         ?? throw new InvalidOperationException("ConnectionStrings:Cqrs must be configured.")));
 
 var app = builder.Build();
+app.UseExceptionHandler();
 
 if (!app.Environment.IsProduction())
 {

@@ -24,6 +24,13 @@ public sealed class Product
     public void UpdatePrice(decimal price)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(price);
+        // Match numeric(18,2) so a successful write never rounds or overflows in PostgreSQL.
+        if (price > 9999999999999999.99m || decimal.Round(price, 2) != price)
+        {
+            throw new ArgumentOutOfRangeException(nameof(price),
+                "Price must not exceed 9999999999999999.99 and must have at most two decimal places.");
+        }
+
         Price = price;
     }
 
