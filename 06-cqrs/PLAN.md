@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** M1 through M7 are complete. M8 remains planned.
+**Status: Completed.** M1 through M8 are complete.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -78,7 +78,7 @@ Completion: integration tests verify the scenarios and the documented trade-offs
 
 ## M8 — Documentation
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Complete the README, architecture and applicable sequence diagrams, API examples, limitations, and trade-offs.
 - Document when to use and when not to use this approach.

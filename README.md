@@ -30,7 +30,7 @@ Each PoC README answers:
 3. [Optimistic Concurrency](03-optimistic-concurrency/) — prevents silent lost updates with atomic version checks and explicit conflict handling. **Status: Completed.**
 4. [Distributed Lock](04-distributed-lock/) — coordinates protected work across multiple application instances. **Status: Completed.**
 5. [Saga Pattern](05-saga-pattern/) — **Status: Completed.**
-6. [CQRS](06-cqrs/) — **Status: In Progress.**
+6. [CQRS](06-cqrs/) — **Status: Completed.**
 
 See [ROADMAP.md](ROADMAP.md) for the planned PoCs. More engineering topics will be added over time.
 

@@ -1,276 +1,228 @@
-# CQRS — Product Catalog & Inventory
+# CQRS — Command Query Responsibility Segregation
 
-**Status: Work in Progress.** M1 through M7 are complete. Commands coordinate domain writes, and concrete query handlers return dedicated read DTOs through EF Core projections. M7 verifies these boundaries with PostgreSQL-backed integration tests and evaluates the trade-offs. M8 remains planned. See [PLAN.md](PLAN.md).
+**Status: Completed.** M1–M8 are complete; see [PLAN.md](PLAN.md).
 
-## The Problem
+## Overview
 
-A small catalog tracks each product's ID, name, price, and available quantity. Users can list products, inspect one product, change its price, and adjust its inventory by a signed delta.
+CQRS separates the responsibility for changing system state (commands) from the responsibility for retrieving information (queries). Different code models can serve these responsibilities while sharing a physical database.
 
-The warehouse operator also needs to know how many products exist, how many are out of stock or low on stock, the total inventory value, and which products need attention. These questions introduce counts, aggregations, calculated values, classifications, and sorting. They do not add write-side business behavior.
+This Product Catalog & Inventory Dashboard uses .NET 10, ASP.NET Core Controllers, EF Core, PostgreSQL, and Docker Compose. Concrete command handlers call Product domain behavior; concrete query handlers project dedicated read DTOs. One API and one PostgreSQL database serve both sides.
 
-The write model protects business invariants, while the dashboard needs a read-optimized representation. CQRS allows these responsibilities to evolve independently when the complexity justifies the separation. It does not require separate databases or automatically improve performance: performance depends on the actual query design. The shared model still works correctly for this small catalog.
+## The problem
 
-## Domain model and read models
+The original catalog used the same `Product` model for reads and writes. This was a reasonable starting point for a small application. Each product has an ID, name, price, and available quantity.
 
-Both sides use the same `CqrsDbContext` and PostgreSQL database. `Product` remains the write-side domain entity. Write request DTOs contain `price` or `delta`; commands return the existing `ProductResponse`. Queries return `ProductListItem`, `ProductDetails`, and the existing `InventoryDashboardResponse` / `InventoryAttentionItemResponse` contracts. Product JSON still contains `id`, `name`, `price`, and `availableQuantity`; attention items retain `id` as the product identifier. Read DTOs expose data without domain behavior, and no query materializes Product entities.
+Writes must update prices and adjust inventory, enforcing nonnegative prices and preventing negative inventory. The warehouse dashboard needs product counts, low-stock and out-of-stock counts, total inventory value, and sorted attention lists. These are retrieval and presentation requirements rather than new Product business behavior.
 
-Domain methods enforce these rules:
+A shared model can still support both. Separation becomes useful when specialized read calculations and write rules make that shared code harder to maintain.
 
-- Names cannot be null, empty, or whitespace.
-- Prices cannot be negative; zero is allowed.
-- Inventory cannot be negative; zero is allowed. Adjustments also reject integer overflow.
+## Example scenario
 
-`UpdatePrice` and `AdjustInventory` enforce the rules before mutation. Controllers handle HTTP concerns; command handlers coordinate writes and saving; business rules live in Domain. Handlers retain structured write logging through `ILogger<T>`.
+A fresh database contains:
 
-M3 demonstrated the shared-model problem by loading all Product entities and calculating the dashboard in the controller. M5 separates that responsibility:
-
-```text
-M3: Controller → Load Product entities → Calculate dashboard
-
-M5: Controller → Query Handler → EF Core projections → Read DTO
-```
-
-The fixed dashboard classifications are mutually exclusive for valid product quantities:
-
-| StockStatus | AvailableQuantity |
-|---|---|
-| `OutOfStock` | 0 |
-| `LowStock` | 1 through 5 inclusive |
-| `InStock` | Greater than 5 |
-
-Each inventory value is `Price * AvailableQuantity`, using decimal arithmetic. The total sums these values across all products, including those in stock. Attention items include only out-of-stock and low-stock products, ordered by status (out of stock first), name ascending using ordinal comparison, then Product ID ascending for ties. `InStock` products contribute to the totals but do not appear in the attention list. Empty catalogs return zero counts/value and an empty list. Stock status, inventory value, and attention flags are not added to Product or persisted; no migration is needed.
-
-## Command Side
-
-A command represents an intention to change business state. `UpdateProductPriceCommand` carries a Product ID and the new price; `AdjustInventoryCommand` carries a Product ID and a signed quantity delta. Both are plain records independent of HTTP and EF Core types.
-
-`ProductsController` constructs a command and calls its concrete `UpdateProductPriceHandler` or `AdjustInventoryHandler`, registered with scoped constructor injection. Each handler loads the Product through `CqrsDbContext`, invokes its domain method, calls `SaveChangesAsync`, and returns a small response DTO. A null result means the Product was not found. Cancellation flows from the controller through the handler to EF Core.
-
-Controllers no longer coordinate write persistence. They map the handler result to the existing 200 response or 404, and domain validation exceptions to the existing 400 Problem Details. Missing request fields still receive 400 through request validation. Invariants remain in Product so every caller uses the same business rules; handlers do not duplicate them. Invalid domain operations fail before mutation or saving.
-
-The write path remains unchanged from M4:
-
-```text
-Commands:
-HTTP → Controller → Command Handler → Product → EF Core / PostgreSQL
-
-Queries:
-HTTP → Controller → Query Handler → EF Core / PostgreSQL → Read DTO
-```
-
-There is no dispatcher, handler interface, repository, or additional project. Command handlers do not depend on query handlers.
-
-## M6 separation review
-
-The existing handlers already keep write coordination and read presentation separate, so M6 retains their implementation and HTTP contracts. The two command handlers load tracked Product entities, invoke domain behavior, and save once before returning `ProductResponse`. The three query handlers use `AsNoTracking()`, project to consumer DTOs, and never mutate Product or save changes. Controllers map HTTP requests and results; Product alone enforces write invariants.
-
-`ProductResponse` describes the existing command success response. `ProductListItem`, `ProductDetails`, `InventoryDashboardResponse`, and `InventoryAttentionItemResponse` describe query results. These records carry data without mutation methods, business invariants, or dependencies on commands. Dashboard DTOs remain in `Responses/`; product read DTOs live in `Queries/Models/`.
-
-Commands and queries have no dependencies on one another. Both use the Infrastructure project's `CqrsDbContext` through scoped constructor injection, with a separate context instance per HTTP request. Domain has no EF Core or Infrastructure dependency: command handlers call domain methods and then persist the entity through Infrastructure. The shared database makes a subsequent request observe a completed prior write through ordinary queries; there is no separate read store to synchronize.
-
-CQRS here means separating intentions to change state from requests for information. Direct calls to concrete handlers are sufficient; MediatR is an optional dispatch library, not a requirement. Event Sourcing is also independent: this application stores current Product state rather than reconstructing it from an event history.
-
-## Query Side
-
-`ProductsController` delegates GET requests to `GetProductsHandler` and `GetProductDetailsHandler`. The details operation takes a small `GetProductDetailsQuery(ProductId)` record and returns null for an unknown ID, which the controller maps to 404. List and dashboard handlers need only a cancellation token, so they do not introduce empty query records. All three concrete handlers are registered as scoped services and use constructor injection.
-
-Product queries use `AsNoTracking()` and `Select` before asynchronous materialization. The list orders by Name then Id and projects directly to `ProductListItem`; details filters by ID and projects to `ProductDetails` in one query. Both read models contain only the existing four response fields. Domain entities are unnecessary for these presentation requests.
-
-`InventoryController` delegates to `GetInventoryDashboardHandler`. PostgreSQL performs three `COUNT` queries (all products, quantity zero, quantity 1–5) and a decimal `SUM(Price * AvailableQuantity)`, defaulting an empty result to zero. A fifth query filters quantity <= 5 and projects directly to attention DTOs. SQL derives status with a conditional expression and calculates inventory value. The summary does not materialize catalog rows, and the attention projection does not select Price separately. Queries run sequentially because they share one scoped DbContext. Only the filtered attention DTOs are sorted in memory to preserve M3's exact .NET ordinal name ordering, including supplementary Unicode characters; PostgreSQL collations do not provide that UTF-16 ordering.
-
-Read handlers never mutate entities or call `SaveChangesAsync`. A successful command commits to the same database that subsequent queries read, so committed changes are immediately observable without asynchronous projections. This is one application and one database, with separate responsibilities and no message broker, Event Sourcing, or eventual consistency requirement.
-
-The concrete query changes reduce entity materialization and move filtering and aggregation into PostgreSQL. CQRS itself does not guarantee better performance; query shape, catalog size, and round trips determine the result. Read models can evolve for consumers without adding presentation fields or behavior to Product.
-
-## Solution and architecture
-
-```text
-EngineeringPlayground.Cqrs.sln
-src/
-  EngineeringPlayground.Cqrs.Api/             Controllers, commands, queries, read/HTTP DTOs, startup
-  EngineeringPlayground.Cqrs.Domain/          Product and its invariants
-  EngineeringPlayground.Cqrs.Infrastructure/  DbContext, EF mapping, migrations
-tests/
-  EngineeringPlayground.Cqrs.IntegrationTests/ PostgreSQL HTTP tests and domain checks
-```
-
-Project references: API → Domain + Infrastructure; Infrastructure → Domain; IntegrationTests → API + Infrastructure. Domain has no project dependencies. There is no Application project or Worker.
-
-```mermaid
-flowchart LR
-    Client --> API[API: ProductsController and InventoryController]
-    API -->|Commands| Commands[Concrete command handlers]
-    API -->|Queries| Queries[Concrete query handlers]
-    Commands --> Domain[Product domain behavior]
-    Commands -->|Load tracked entity and save changes| EF[EF Core / CqrsDbContext]
-    Queries -->|Read-only projections and aggregates| EF
-    EF --> PostgreSQL[(One PostgreSQL database)]
-    EF -->|Projected data| DTOs[Read DTOs]
-    DTOs --> Queries
-```
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Controller as ProductsController
-    participant Handler as AdjustInventoryHandler
-    participant Context as CqrsDbContext
-    participant Product
-    participant DB as PostgreSQL
-    Client->>Controller: PUT /products/{id}/inventory {delta: -3}
-    Controller->>Handler: HandleAsync(AdjustInventoryCommand, cancellationToken)
-    Handler->>Context: Load Product
-    Context->>DB: SELECT product
-    DB-->>Context: Product row
-    Context-->>Handler: Shared Product entity
-    Handler->>Product: AdjustInventory(-3)
-    alt Resulting quantity is valid
-        Product-->>Handler: Updated quantity
-        Handler->>Context: SaveChangesAsync
-        Context->>DB: UPDATE product
-        DB-->>Context: Saved
-        Context-->>Handler: Changes saved
-        Handler-->>Controller: ProductResponse
-        Controller-->>Client: 200 + unchanged product JSON
-    else Negative quantity or integer overflow
-        Product-->>Handler: Reject adjustment
-        Handler-->>Controller: ArgumentOutOfRangeException
-        Controller-->>Client: 400 Problem Details
-    end
-```
-
-For an unknown product the command handler returns null, and the controller returns 404 before any domain operation. Product reads use dedicated DTO projections through the same context type.
-
-Read-after-write uses consecutive HTTP requests and the same PostgreSQL database:
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant HTTP as ProductsController / InventoryController
-    participant Commands as Command handlers
-    participant DB as PostgreSQL
-    participant Queries as Query handlers
-    Client->>HTTP: PUT /products/{id}/price
-    HTTP->>Commands: UpdateProductPriceCommand
-    Note over Commands: Load Product and call UpdatePrice
-    Commands->>DB: SaveChangesAsync: UPDATE and commit
-    DB-->>Commands: Write committed
-    Commands-->>HTTP: ProductResponse
-    HTTP-->>Client: 200
-    Client->>HTTP: GET /products/{id}
-    HTTP->>Queries: GetProductDetailsQuery
-    Queries->>DB: Read-only DTO projection
-    DB-->>Queries: Committed price
-    Queries-->>HTTP: ProductDetails
-    HTTP-->>Client: 200 with updated price
-    Client->>HTTP: PUT /products/{id}/inventory
-    HTTP->>Commands: AdjustInventoryCommand
-    Note over Commands: Load Product and call AdjustInventory
-    Commands->>DB: SaveChangesAsync: UPDATE and commit
-    DB-->>Commands: Write committed
-    Commands-->>HTTP: ProductResponse
-    HTTP-->>Client: 200
-    Client->>HTTP: GET /inventory/dashboard
-    HTTP->>Queries: GetInventoryDashboardHandler
-    Queries->>DB: SQL aggregates and attention projection
-    DB-->>Queries: Committed quantity and values
-    Queries-->>HTTP: InventoryDashboardResponse
-    HTTP-->>Client: 200 with updated dashboard
-```
-
-No polling, delays, or asynchronous synchronization are needed. The command finishes saving before returning success, and the following query reads that committed state. CQRS does not inherently require eventual consistency.
-
-The dashboard now executes database aggregates and a filtered projection:
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Controller as InventoryController
-    participant Handler as GetInventoryDashboardHandler
-    participant Context as CqrsDbContext
-    participant DB as PostgreSQL
-    Client->>Controller: GET /inventory/dashboard
-    Controller->>Handler: HandleAsync(cancellationToken)
-    Handler->>Context: CountAsync / SumAsync (sequentially)
-    Context->>DB: COUNT and SUM queries
-    DB-->>Context: Scalar totals
-    Context-->>Handler: Counts and decimal value
-    Handler->>Context: Filter, Select attention DTOs
-    Context->>DB: SELECT with WHERE, CASE and multiplication
-    DB-->>Context: Projected attention rows
-    Context-->>Handler: Attention DTOs
-    Note over Handler: Sort attention DTOs by status, ordinal name, ID
-    Handler-->>Controller: InventoryDashboardResponse
-    Controller-->>Client: 200 + InventoryDashboardResponse
-```
-
-## Run locally
-
-Requirements: Docker with Linux containers and Docker Compose. From `06-cqrs/`:
-
-```bash
-docker compose up --build
-```
-
-This starts PostgreSQL 17 and the .NET 10 API at [http://localhost:8086/products](http://localhost:8086/products). PostgreSQL creates the database, its healthcheck gates API startup, and the API applies pending EF Core migrations before accepting requests. No manual database creation, migration command, or service sequencing is required.
-
-Compose includes working local defaults. Optionally copy `.env.example` to `.env` to change `API_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, or `POSTGRES_PASSWORD`. Credentials in the example are for local development. The database is internal to Compose; its data persists in a named volume. The local connection disables GSS encryption negotiation because this password-authenticated setup does not use Kerberos.
-
-```bash
-docker compose down
-# To delete this PoC's local data and start fresh:
-docker compose down -v
-docker compose up --build
-```
-
-## Persistence, migrations, and seed
-
-Infrastructure contains `CqrsDbContext`, `ProductConfiguration : IEntityTypeConfiguration<Product>`, and the generated `InitialCreate` migration. Mapping defines the primary key, required name, `numeric(18,2)` price, and integer quantity. Use currency values with at most two decimal places; PostgreSQL stores prices at that scale.
-
-The initial migration inserts deterministic data through EF Core `HasData`:
-
-| ID | Name | Price | AvailableQuantity |
+| ID | Name | Price | Available quantity |
 |---|---|---:|---:|
 | `11111111-1111-1111-1111-111111111111` | Mechanical Keyboard | 299.00 | 15 |
 | `22222222-2222-2222-2222-222222222222` | Wireless Mouse | 129.00 | 30 |
 | `33333333-3333-3333-3333-333333333333` | USB-C Dock | 449.00 | 8 |
 
-Migration history prevents repeated startup from inserting duplicates or resetting edited values. `EnsureCreated()` is not used.
+Initially, none need attention and total inventory value is `11947.00`. Changing the dock price to `459.00` and adjusting its quantity by `-3` leaves five units. The next dashboard query includes the dock as `LowStock`, with inventory value `2295.00`, and returns total value `10650.00`. Executable requests and responses appear below.
 
-Only the API runs migrations, and only when the environment is **not Production**. Compose sets `ASPNETCORE_ENVIRONMENT=Development`. **Production never migrates automatically**: apply reviewed EF Core migrations through a controlled deployment process before starting the API. Configure `ConnectionStrings__Cqrs` for the target database. This PoC does not add a production migration runner.
+## Evolution: shared model to CQRS
 
-## API
+These stages explain this PoC's progression; they are not a required migration path for every application.
 
-| Method | Endpoint | Behavior |
+### Stage 1 — Shared model (M2)
+
+```text
+HTTP Controller → Product + DbContext → PostgreSQL
+```
+
+Reads and writes shared the Product model. M2 temporarily returned Product directly from reads as a milestone-specific exception. The final API returns DTOs.
+
+### Stage 2 — Dashboard requirements (M3)
+
+```text
+Product business state → Dashboard calculations → Presentation response
+```
+
+The dashboard loaded Product entities and calculated its response in the controller. It worked, but whole-entity reads and presentation calculations gave the shared model and controller more responsibilities.
+
+### Stage 3 — Command Side (M4)
+
+```text
+HTTP PUT → Command Handler → Product Domain → EF Core / PostgreSQL
+```
+
+Explicit commands made state-changing intent visible. Handlers coordinate loading and saving, Product enforces invariants, and controllers map requests and HTTP outcomes.
+
+### Stage 4 — Query Side (M5–M7)
+
+```text
+HTTP GET → Query Handler → EF Core Projection → Read DTO
+```
+
+Read handlers project consumer-specific DTOs without materializing full Product entities. M6 made the separation explicit; M7 verified persistence, read behavior, and boundaries using real PostgreSQL. M8 completes the documentation.
+
+## Architecture
+
+See the [architecture diagram](diagrams/architecture.md) and [command-to-query sequence](diagrams/command-to-query.md).
+
+| Project | Responsibility | Project dependencies |
 |---|---|---|
-| GET | `/products` | 200, `ProductListItem` DTOs ordered by name then ID |
-| GET | `/products/{id}` | 200, `ProductDetails` DTO; 404 if unknown |
-| PUT | `/products/{id}/price` | `{ "price": 319.00 }`; 200 with updated product JSON (`ProductResponse`) |
-| PUT | `/products/{id}/inventory` | `{ "delta": -3 }`; 200 with updated product JSON (`ProductResponse`) |
-| GET | `/inventory/dashboard` | 200, counts, total inventory value, sorted attention items |
+| `EngineeringPlayground.Cqrs.Api` | Controllers, request/response DTOs, commands, query handlers, read models, dependency registration | Domain, Infrastructure |
+| `EngineeringPlayground.Cqrs.Domain` | Product and business invariants | None |
+| `EngineeringPlayground.Cqrs.Infrastructure` | `CqrsDbContext`, entity configuration, migrations | Domain |
+| `EngineeringPlayground.Cqrs.IntegrationTests` | xUnit domain, startup, and PostgreSQL-backed HTTP verification | Api, Infrastructure |
 
-Both writes return 404 for an unknown product. Invalid or missing input returns 400; a rejected domain operation leaves persisted state unchanged. Positive deltas increase inventory and negative deltas decrease it.
+Command and query handlers both live in the API project. Both use the same scoped `CqrsDbContext` type and persistence mapping from Infrastructure. There is one `Products` table, no separately persisted read model, and no Application project or Worker. Domain depends on no other project.
+
+Both sides run in the same API process and deployment. There is no message broker or asynchronous projection synchronization.
+
+## Command Side
+
+| Command | Handler | Domain behavior |
+|---|---|---|
+| `UpdateProductPriceCommand(ProductId, Price)` | `UpdateProductPriceHandler` | `Product.UpdatePrice(price)` |
+| `AdjustInventoryCommand(ProductId, Delta)` | `AdjustInventoryHandler` | `Product.AdjustInventory(delta)` |
+
+Commands are plain records representing intent. For example, `PUT /products/{id}/inventory` supplies a signed `delta`. `ProductsController` constructs `AdjustInventoryCommand`; the handler loads a tracked Product, calls `AdjustInventory`, awaits `SaveChangesAsync`, logs the change, and returns `ProductResponse`. Positive deltas increase stock; negative deltas decrease it.
+
+Product protects the rules before mutation:
+
+- Names cannot be null, empty, or whitespace; construction trims them.
+- Prices cannot be negative; zero is valid.
+- Quantities cannot be negative; adjustments also reject results greater than `Int32.MaxValue`.
+
+Handlers return null for unknown IDs, which the controller maps to 404. Domain range exceptions become 400 Problem Details. Required nullable request properties distinguish missing values from valid zeros; ASP.NET Core validates them before handler execution. Rejected operations do not save changes.
+
+## Query Side
+
+| Handler | Input | Read contract |
+|---|---|---|
+| `GetProductsHandler` | Cancellation token | List of `ProductListItem` |
+| `GetProductDetailsHandler` | `GetProductDetailsQuery(ProductId)` | `ProductDetails`, or null for an unknown ID |
+| `GetInventoryDashboardHandler` | Cancellation token | `InventoryDashboardResponse`, containing `InventoryAttentionItemResponse` items |
+
+Only details needs a query record. Parameterless reads call concrete handlers directly; no generic bus or mediator is involved.
+
+For example, `GetProductsHandler` executes:
+
+```csharp
+return _database.Products
+    .AsNoTracking()
+    .OrderBy(product => product.Name)
+    .ThenBy(product => product.Id)
+    .Select(product => new ProductListItem(
+        product.Id, product.Name, product.Price, product.AvailableQuantity))
+    .ToListAsync(cancellationToken);
+```
+
+`Select` shapes the database result into a read DTO without materializing Product entities. `AsNoTracking` expresses read-only intent. Product contains behavior and invariants; a read DTO contains consumer-specific data without domain behavior. Product list and details currently expose the same fields through separate contracts, allowing their code to evolve separately. Queries never call `SaveChanges` or modify business state.
+
+### Dashboard calculations
+
+| Stock classification | Available quantity |
+|---|---|
+| `OutOfStock` | `quantity == 0` |
+| `LowStock` | `quantity >= 1 && quantity <= 5` |
+| `InStock` | `quantity > 5` |
+
+The handler executes five SQL queries sequentially on one scoped DbContext: total count, out-of-stock count, low-stock count, total value, and the attention projection. Counts and `SUM(Price * AvailableQuantity)` run in PostgreSQL. Each product's inventory value is `Price * AvailableQuantity`, using decimal arithmetic.
+
+The attention query filters quantities at or below five in SQL and projects `id`, `name`, `availableQuantity`, `stockStatus`, and `inventoryValue`. It sorts these DTOs in memory by out-of-stock first, then name with `StringComparer.Ordinal`, then Product ID. This preserves deterministic UTF-16 ordinal ordering, including case and Unicode differences. The product list instead orders by name and ID in PostgreSQL, using database name ordering.
+
+In-stock products contribute to totals but do not appear in the attention list. Empty catalogs return zero counts/value and an empty list. Classifications and calculated values are derived on reads, not added to Product or persisted. No measured performance improvement is claimed.
+
+## Data flow and consistency
+
+The [sequence diagram](diagrams/command-to-query.md) traces an update through domain validation and commit, followed by a GET projecting the saved data.
+
+One PostgreSQL database, synchronous awaited EF Core writes, and direct database queries provide read-after-write behavior: after a successful committed write, a subsequent ordinary query observes the committed state under normal database transaction semantics. There is no asynchronous read-model synchronization, polling, or projection delay. CQRS does not inherently imply eventual consistency.
+
+This does not provide a universal snapshot guarantee. The dashboard's five statements are not wrapped in a shared snapshot transaction; concurrent writes between statements can produce totals and attention items from different committed states. There is also no optimistic concurrency protection: concurrent read-modify-save inventory operations can overwrite each other's changes.
+
+## Running locally
+
+Requirements: Docker with Linux containers and Docker Compose. From `06-cqrs/`, run:
+
+```bash
+docker compose up --build
+```
+
+Compose starts PostgreSQL 17 (`postgres:17-alpine`) and the .NET 10 API. PostgreSQL creates the database; its healthcheck gates API startup. The API applies pending EF Core migrations and the initial deterministic seed before accepting requests. No manual database creation, migrations, seeding, or service ordering is required.
+
+The default API address is [http://localhost:8086/products](http://localhost:8086/products). Compose maps host port **8086** to API container port **8080**. PostgreSQL uses port **5432** internally and is not published on the host. The API's standalone launch profile uses port 5164 and needs its own connection string; the examples here use Compose.
+
+Compose includes working local defaults. Optionally copy [.env.example](.env.example) to `.env` to override them:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `API_PORT` | `8086` | Published API port |
+| `POSTGRES_DB` | `cqrs` | Database created by PostgreSQL |
+| `POSTGRES_USER` | `cqrs` | Local database user |
+| `POSTGRES_PASSWORD` | Local example value in `.env.example` | Local database password |
+
+The example credentials are development-only values. Compose sets `ASPNETCORE_ENVIRONMENT=Development`, `ASPNETCORE_HTTP_PORTS=8080`, and `ConnectionStrings__Cqrs`. The local connection disables GSS encryption negotiation because this password-authenticated setup does not use Kerberos. PostgreSQL data persists in the `postgres-data` named volume.
+
+```bash
+docker compose down
+# Delete this PoC's local database and reproduce the fresh-seed examples:
+docker compose down -v
+docker compose up --build
+```
+
+### Persistence and migrations
+
+Infrastructure contains `ProductConfiguration : IEntityTypeConfiguration<Product>` and the generated `InitialCreate` migration. Mapping defines a UUID primary key, required text name, `numeric(18,2)` price, and integer quantity. Use prices with at most two decimal places; PostgreSQL stores them at that scale.
+
+The initial migration inserts the three products above through EF Core `HasData`. Migration history prevents subsequent starts from duplicating seeds or resetting edits. `EnsureCreated()` is not used.
+
+Only the API applies migrations, and only outside **Production**. Production requires reviewed, controlled migration execution before API startup and a `ConnectionStrings__Cqrs` value for its database. There is no production migration runner in this PoC.
+
+## API examples
+
+| Method | Route | Successful response |
+|---|---|---|
+| GET | `/products` | 200, array of `ProductListItem`, ordered by name then ID |
+| GET | `/products/{id}` | 200, `ProductDetails` |
+| GET | `/inventory/dashboard` | 200, `InventoryDashboardResponse` |
+| PUT | `/products/{id}/price` | 200, `ProductResponse` |
+| PUT | `/products/{id}/inventory` | 200, `ProductResponse` |
+
+Unknown product IDs return 404 for details and both writes. Routes constrain IDs to GUIDs. Missing or invalid request input returns 400; domain rejections use Problem Details. Writes return the updated product rather than 204.
+
+The examples use Bash quoting and default Compose ports. In Windows PowerShell, use `curl.exe` and shell-appropriate JSON quoting, or the API project's [HTTP request file](src/EngineeringPlayground.Cqrs.Api/EngineeringPlayground.Cqrs.Api.http).
+
+### List products and choose an ID
 
 ```bash
 curl http://localhost:8086/products
-curl http://localhost:8086/products/11111111-1111-1111-1111-111111111111
-curl -X PUT http://localhost:8086/products/11111111-1111-1111-1111-111111111111/price \
-  -H "Content-Type: application/json" -d '{"price":319.00}'
-curl -X PUT http://localhost:8086/products/11111111-1111-1111-1111-111111111111/inventory \
-  -H "Content-Type: application/json" -d '{"delta":-3}'
 ```
 
-The API project's `.http` file contains equivalent requests for an HTTP editor.
+A fresh database returns:
 
-## Example Scenario
+```json
+[
+  { "id": "11111111-1111-1111-1111-111111111111", "name": "Mechanical Keyboard", "price": 299.00, "availableQuantity": 15 },
+  { "id": "33333333-3333-3333-3333-333333333333", "name": "USB-C Dock", "price": 449.00, "availableQuantity": 8 },
+  { "id": "22222222-2222-2222-2222-222222222222", "name": "Wireless Mouse", "price": 129.00, "availableQuantity": 30 }
+]
+```
 
-With a fresh database, the seeded products have quantities 15, 30, and 8, so none need attention. This request:
+Copy an `id` from this response for details and writes. Remaining examples use the dock's seeded ID and assume a fresh database, executed in order.
+
+```bash
+curl http://localhost:8086/products/33333333-3333-3333-3333-333333333333
+```
+
+Details return an object with `id`, `name`, `price`, and `availableQuantity`, matching the corresponding list item. These are also the fields in both write responses.
+
+### Read the initial dashboard
 
 ```bash
 curl http://localhost:8086/inventory/dashboard
 ```
-
-returns:
 
 ```json
 {
@@ -282,17 +234,32 @@ returns:
 }
 ```
 
-Starting from that seed, update the USB-C Dock price and reduce its inventory to the low-stock boundary:
+### Update price and inventory
 
 ```bash
 curl -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/price \
   -H "Content-Type: application/json" -d '{"price":459.00}'
-curl -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/inventory \
-  -H "Content-Type: application/json" -d '{"delta":-3}'
-curl http://localhost:8086/inventory/dashboard
 ```
 
-The dashboard reads the persisted changes immediately:
+```json
+{
+  "id": "33333333-3333-3333-3333-333333333333",
+  "name": "USB-C Dock",
+  "price": 459.00,
+  "availableQuantity": 8
+}
+```
+
+```bash
+curl -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/inventory \
+  -H "Content-Type: application/json" -d '{"delta":-3}'
+```
+
+This returns the same product shape with `price: 459.00` and `availableQuantity: 5`. A subsequent details GET returns those persisted values. Then query the dashboard:
+
+```bash
+curl http://localhost:8086/inventory/dashboard
+```
 
 ```json
 {
@@ -312,11 +279,49 @@ The dashboard reads the persisted changes immediately:
 }
 ```
 
-The total is `299.00 * 15 + 129.00 * 30 + 459.00 * 5 = 10650.00`. A further inventory adjustment of `-5` makes the dock `OutOfStock` with value zero. The existing domain methods protect valid price and quantity; the dashboard derives its presentation from that same state. JSON numbers may omit trailing zeros.
+The total is `299.00 * 15 + 129.00 * 30 + 459.00 * 5 = 10650.00`. JSON numbers may omit trailing zeros.
 
-## Tests and validation
+### Reject an invalid adjustment
+
+With five docks available, subtracting six would make inventory negative:
+
+```bash
+curl -i -X PUT http://localhost:8086/products/33333333-3333-3333-3333-333333333333/inventory \
+  -H "Content-Type: application/json" -d '{"delta":-6}'
+```
+
+The response is **400 Bad Request**, `application/problem+json`. Stable Problem Details fields include:
+
+```json
+{
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "The resulting inventory quantity must be between zero and Int32.MaxValue. (Parameter 'delta')"
+}
+```
+
+The response also includes framework metadata such as `type` and a request-specific `traceId`. A subsequent details GET still returns quantity 5 and price 459.00. Sending `{}` to either write route instead triggers required-field validation and a 400 validation response.
+
+## Integration tests
 
 Install the .NET 10 SDK and start Docker. From `06-cqrs/`:
+
+```bash
+dotnet test
+```
+
+xUnit tests use `WebApplicationFactory` and Testcontainers with real PostgreSQL 17, without an EF Core InMemory provider. Compose need not be running. The shared `ProductsTests` fixture starts its own container; each test creates a unique database, and non-Production API startup migrates and seeds it. Tests dispose HTTP hosts, clear the relevant connection pool, drop their databases, and dispose the fixture container. Tests do not depend on order or alter the Compose database.
+
+Coverage includes:
+
+- Command persistence, full write DTOs, positive/negative adjustments, zero boundaries, rejected negative values and overflow, missing fields, and unknown IDs.
+- Domain construction invariants, repeatable migrations without resetting seeds, and Production startup without a migration connection.
+- Product list/details contracts, name/ID ordering, dashboard totals, classification boundaries at 0, 1, 5, and 6, zero-price items, and empty catalogs.
+- Attention membership, calculated values, and ordering with same-name ID ties, case differences, and Unicode names.
+- Details and dashboard reads immediately after price and inventory writes, plus fresh-context persistence verification.
+- Query boundaries: test-only EF interceptors reject Product entity materialization and synchronous/asynchronous `SaveChanges` during all three query paths.
+
+For the full validation workflow:
 
 ```bash
 dotnet format
@@ -325,51 +330,43 @@ dotnet test
 docker compose config
 ```
 
-xUnit integration tests use `WebApplicationFactory` and Testcontainers with real PostgreSQL 17. Testcontainers creates and removes its own PostgreSQL container; Compose need not be running. Each test gets a new database, automatically migrated and seeded by API startup. Test data is deterministic and tests do not depend on order. Tests drop their databases, and the fixture disposes its container.
+## Trade-offs
 
-The PostgreSQL fixture is shared within `ProductsTests`, whose tests xUnit runs sequentially. Each test instance uses a unique database name and connection string, so catalog replacements cannot affect another test or the Compose database. Cleanup disposes the HTTP host and clears that database's connection pool before dropping it. No manual database preparation is required.
+Commands make state-changing intent explicit, Product protects write invariants, and read DTOs reflect consumer needs. Read and write code can evolve separately within the application. Concrete handlers and direct DbContext access keep the example understandable without repositories or a dispatch framework.
 
-Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. The existing HTTP write tests now exercise command handlers and verify all product response fields and validation Problem Details. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
-
-Product HTTP tests verify complete list/detail DTOs, seeded list ordering, and same-name ID ties using deliberately scrambled insertion order. The unknown-product test retains the read 404 assertion. Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties, case differences, and supplementary Unicode names; and an empty catalog. Read-after-write tests verify details and dashboard immediately after the price command, then again after the inventory command in all three stock categories. Each GET uses a separate HTTP request scope; a fresh DbContext also verifies the final persisted price and quantity. Write response tests deserialize `ProductResponse` rather than the domain entity, keeping HTTP contracts independent of domain behavior. Existing write and domain tests remain in place.
-
-M7 retains those scenarios instead of duplicating them. It strengthens rejected-write assertions to check both price and quantity, and adds one HTTP scenario for all three query handlers with test-only EF Core interceptors that reject Product materialization (including untracked entities) and synchronous or asynchronous `SaveChanges`. The dashboard fixture includes an attention item, so that projection is exercised too. A fresh DbContext verifies the complete persisted Product after these reads. These are real PostgreSQL operations, without mocks, delays, polling, SQL snapshots, or performance benchmarks.
-
-## Trade-offs and limits
-
-Commands express state-changing intentions: command handlers coordinate loading and saving while Product protects price and inventory invariants. Query handlers return consumer-specific DTOs without exposing domain behavior. This makes write rules and read presentation independently understandable and lets their code evolve at different rates. Both still belong to one application and use one database; this does not provide independent deployment or database scaling.
-
-The cost is more code: commands, command handlers, queries, query handlers, and read DTOs. Fields such as Product ID, name, price, and quantity appear in multiple representations that must be maintained as requirements change. Developers must understand which side owns each responsibility and follow more classes through a request. For a small CRUD application, that extra structure and coordination may cost more than it helps. Handlers use DbContext directly rather than adding repositories or a dispatch framework; DTO projections still depend on the mapped schema and provider translation.
+The cost is additional commands, handlers, queries, and DTOs. IDs, names, prices, and quantities appear in several representations; changes can require coordinated edits. Developers must follow more classes, and projections still depend on persistence mappings and provider translation. For a small CRUD application, these maintenance costs may outweigh the benefits. Code separation here does not provide independent deployment or scaling.
 
 ### CQRS versus query optimization
 
-**Efficient SQL projections, filtering, and aggregation do not require CQRS.** A traditional CRUD application can also use `.AsNoTracking().Select(...)`, SQL filters, and database-side aggregation. CQRS provides organizational separation of read and write responsibilities. The query improvements here come from the actual EF Core query design, not automatically from introducing CQRS. No benchmark-based speedup is claimed.
+Efficient EF Core projections do not require CQRS. A traditional CRUD application can use `AsNoTracking()`, `Select()`, SQL filtering, and database-side aggregation too. Query design provides these optimizations; CQRS separates responsibilities. This PoC replaces the M3 whole-entity dashboard calculation with aggregates and filtered DTO projections, without claiming benchmark-based speedups.
 
-Compared with M3:
+Five straightforward dashboard queries keep the code simple at the cost of round trips and the snapshot limitation described above. Exact ordinal attention ordering requires an in-memory sort of the filtered DTOs.
 
-- Product entities are no longer materialized by reads.
-- Database aggregates replace whole-catalog aggregation in application memory.
-- Filtering and calculation happen before attention items are materialized; only projected attention DTOs are sorted in memory.
-- Read-specific coordination lives in concrete handlers, outside HTTP mapping.
+## When to use CQRS
 
-The dashboard deliberately uses five straightforward SQL queries rather than complex SQL to force one round trip. These statements do not provide a single snapshot if writes occur concurrently; a later read still sees a completed prior write. The attention list and product list are unbounded in this milestone. Exact compatibility with M3's ordinal sorting costs an in-memory sort of attention DTOs. No generic query abstraction or separate read store is needed here.
+Consider it when write-side invariants grow complex, read consumers need specialized models, read and write requirements evolve differently, or a shared model becomes hard to maintain. In this catalog, price and inventory rules belong to Product, while an operator needs classifications, totals, and attention lists. Explicit boundaries can reduce coupling when that distinction matters enough to justify extra code.
 
-### Consistency model
+## When not to use CQRS
 
-This PoC uses one PostgreSQL database, one application, and synchronous EF Core operations: each command awaits its database save before responding. A successful committed write is visible to subsequent ordinary queries, subject to normal database transaction semantics. No asynchronous read-model synchronization is involved, and CQRS does not inherently require eventual consistency. The dashboard's five statements can still observe different committed states if other writes occur between them.
+Simple administrative CRUD applications, small models, nearly identical read/write representations, and limited business rules often benefit more from a shared approach. Dedicated handlers and DTOs should earn their maintenance cost. CQRS is not a universal default, and query projections remain useful without it.
 
-CQRS does not inherently require MediatR, Event Sourcing, message brokers, microservices, separate databases, read replicas, asynchronous projections, or eventual consistency. Those are separate architectural choices and are absent here.
+## What CQRS does not require
 
-### Intentional limitations
+MediatR, Event Sourcing, microservices, separate databases, message brokers, eventual consistency, asynchronous projections, and separate deployments are independent architectural choices. None is required for CQRS, and none is used here.
 
-There are no separate read/write deployments, independent database scaling, asynchronous read-model synchronization, Event Sourcing, caching, optimistic concurrency handling, distributed messaging, or benchmark-based performance comparison. Concurrent read-modify-save inventory adjustments can overwrite one another; this implementation does not protect concurrent inventory allocation. These features remain outside this PoC.
+## Limitations
 
-## When to use this approach
+- One database and DbContext type; no separate read/write stores or independently deployed sides.
+- No asynchronous read-model projections, Event Sourcing, message broker, background worker, or caching.
+- No optimistic concurrency handling or protection against lost concurrent inventory updates.
+- No single-snapshot dashboard under concurrent writes; product and attention lists are unbounded.
+- No benchmark-based performance comparison.
 
-Use CQRS when read and write requirements differ significantly, write-side business rules are complex, consumers require specialized representations, or the two sides evolve at different rates. In this catalog, inventory adjustments and price rules belong to Product, while the operator dashboard needs classifications and totals. Explicit separation is useful when it improves maintainability enough to justify the extra code. One database keeps deployment and read-after-write behavior simple.
+These are intentional scope limits. This example is unsuitable as-is for concurrent stock allocation or a dashboard requiring a single consistent snapshot.
 
-## When not to use this approach
+## Key takeaways
 
-CQRS may be unnecessary for simple CRUD when read and write requirements are nearly identical, the domain has few invariants, and dedicated handlers and DTOs add more code than value. It is not a default architecture for every .NET API; the shared model already worked for this small catalog. SQL projections and aggregates remain useful in either design.
-
-Do not use this example as a stock reservation system requiring correct concurrent allocation or a dashboard requiring a single consistent snapshot under concurrent writes. M8 remains planned.
+1. CQRS separates read and write responsibilities; separate databases are optional.
+2. Domain behavior protects write-side invariants, while read DTOs serve consumer-specific needs.
+3. Query optimization works with or without CQRS.
+4. Introduce the separation when its clarity and maintainability justify the added code.
