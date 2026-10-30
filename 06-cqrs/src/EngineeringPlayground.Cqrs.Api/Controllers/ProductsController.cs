@@ -1,10 +1,9 @@
 using EngineeringPlayground.Cqrs.Api.Commands;
+using EngineeringPlayground.Cqrs.Api.Queries;
+using EngineeringPlayground.Cqrs.Api.Queries.Models;
 using EngineeringPlayground.Cqrs.Api.Requests;
 using EngineeringPlayground.Cqrs.Api.Responses;
-using EngineeringPlayground.Cqrs.Domain;
-using EngineeringPlayground.Cqrs.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace EngineeringPlayground.Cqrs.Api.Controllers;
 
@@ -12,28 +11,30 @@ namespace EngineeringPlayground.Cqrs.Api.Controllers;
 [Route("products")]
 public sealed class ProductsController : ControllerBase
 {
-    private readonly CqrsDbContext _database;
+    private readonly GetProductsHandler _getProductsHandler;
+    private readonly GetProductDetailsHandler _getProductDetailsHandler;
     private readonly UpdateProductPriceHandler _updateProductPriceHandler;
     private readonly AdjustInventoryHandler _adjustInventoryHandler;
 
-    public ProductsController(CqrsDbContext database,
+    public ProductsController(GetProductsHandler getProductsHandler, GetProductDetailsHandler getProductDetailsHandler,
         UpdateProductPriceHandler updateProductPriceHandler, AdjustInventoryHandler adjustInventoryHandler)
     {
-        _database = database;
+        _getProductsHandler = getProductsHandler;
+        _getProductDetailsHandler = getProductDetailsHandler;
         _updateProductPriceHandler = updateProductPriceHandler;
         _adjustInventoryHandler = adjustInventoryHandler;
     }
 
     [HttpGet]
-    public async Task<ActionResult<List<Product>>> GetAll(CancellationToken cancellationToken)
+    public async Task<ActionResult<List<ProductListItem>>> GetAll(CancellationToken cancellationToken)
     {
-        return await _database.Products.OrderBy(product => product.Name).ToListAsync(cancellationToken);
+        return await _getProductsHandler.HandleAsync(cancellationToken);
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<ActionResult<Product>> GetById(Guid id, CancellationToken cancellationToken)
+    public async Task<ActionResult<ProductDetails>> GetById(Guid id, CancellationToken cancellationToken)
     {
-        var product = await _database.Products.FindAsync([id], cancellationToken);
+        var product = await _getProductDetailsHandler.HandleAsync(new GetProductDetailsQuery(id), cancellationToken);
         if (product is null)
         {
             return NotFound();

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using EngineeringPlayground.Cqrs.Api.Queries.Models;
 using EngineeringPlayground.Cqrs.Api.Responses;
 using EngineeringPlayground.Cqrs.Domain;
 using EngineeringPlayground.Cqrs.Infrastructure;
@@ -64,26 +65,48 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
     [Fact]
     public async Task GetReturnsSeededProducts()
     {
-        var products = await _client.GetFromJsonAsync<List<Product>>("/products");
+        var products = await _client.GetFromJsonAsync<List<ProductListItem>>("/products");
 
         Assert.NotNull(products);
-        Assert.Equal(3, products.Count);
-        Assert.Contains(products, product => product.Id == KeyboardId && product.Name == "Mechanical Keyboard"
-            && product.Price == 299.00m && product.AvailableQuantity == 15);
-        Assert.Contains(products, product => product.Id == Guid.Parse("22222222-2222-2222-2222-222222222222")
-            && product.Name == "Wireless Mouse" && product.Price == 129.00m && product.AvailableQuantity == 30);
-        Assert.Contains(products, product => product.Id == Guid.Parse("33333333-3333-3333-3333-333333333333")
-            && product.Name == "USB-C Dock" && product.Price == 449.00m && product.AvailableQuantity == 8);
+        ProductListItem[] expected =
+        [
+            new(KeyboardId, "Mechanical Keyboard", 299.00m, 15),
+            new(Guid.Parse("33333333-3333-3333-3333-333333333333"), "USB-C Dock", 449.00m, 8),
+            new(Guid.Parse("22222222-2222-2222-2222-222222222222"), "Wireless Mouse", 129.00m, 30)
+        ];
+        Assert.Equal(expected, products);
+    }
+
+    [Fact]
+    public async Task ProductListOrdersByNameThenId()
+    {
+        var firstAlpha = Guid.Parse("40000000-0000-0000-0000-000000000001");
+        var secondAlpha = Guid.Parse("40000000-0000-0000-0000-000000000002");
+        var zulu = Guid.Parse("40000000-0000-0000-0000-000000000003");
+        await ReplaceProductsAsync(
+            new Product(zulu, "Zulu", 4.56m, 6),
+            new Product(secondAlpha, "Alpha", 0m, 0),
+            new Product(firstAlpha, "Alpha", 1.23m, 5));
+
+        var products = await _client.GetFromJsonAsync<List<ProductListItem>>("/products");
+
+        Assert.NotNull(products);
+        ProductListItem[] expected =
+        [
+            new(firstAlpha, "Alpha", 1.23m, 5),
+            new(secondAlpha, "Alpha", 0m, 0),
+            new(zulu, "Zulu", 4.56m, 6)
+        ];
+        Assert.Equal(expected, products);
     }
 
     [Fact]
     public async Task GetReturnsOneProduct()
     {
-        var product = await _client.GetFromJsonAsync<Product>($"/products/{KeyboardId}");
+        var product = await _client.GetFromJsonAsync<ProductDetails>($"/products/{KeyboardId}");
 
         Assert.NotNull(product);
-        Assert.Equal(KeyboardId, product.Id);
-        Assert.Equal("Mechanical Keyboard", product.Name);
+        Assert.Equal(new ProductDetails(KeyboardId, "Mechanical Keyboard", 299.00m, 15), product);
     }
 
     [Theory]
@@ -230,6 +253,9 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var lowAlphaFirst = Guid.Parse("20000000-0000-0000-0000-000000000003");
         var lowAlphaSecond = Guid.Parse("20000000-0000-0000-0000-000000000004");
         var lowZulu = Guid.Parse("20000000-0000-0000-0000-000000000005");
+        var lowLowercase = Guid.Parse("20000000-0000-0000-0000-000000000007");
+        var lowSupplementary = Guid.Parse("20000000-0000-0000-0000-000000000008");
+        var lowPrivateUse = Guid.Parse("20000000-0000-0000-0000-000000000009");
         // Deliberately scramble insertion order and give same-name products different quantities.
         await ReplaceProductsAsync(
             new Product(lowAlphaSecond, "Alpha", 2.50m, 1),
@@ -237,7 +263,10 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
             new Product(emptyZulu, "Zulu", 99.99m, 0),
             new Product(Guid.Parse("20000000-0000-0000-0000-000000000006"), "In stock", 10m, 6),
             new Product(lowAlphaFirst, "Alpha", 1.25m, 5),
-            new Product(emptyAlpha, "Alpha", 5m, 0));
+            new Product(emptyAlpha, "Alpha", 5m, 0),
+            new Product(lowPrivateUse, "\uE000", 1m, 1),
+            new Product(lowLowercase, "alpha", 1m, 1),
+            new Product(lowSupplementary, "\U00010000", 1m, 1));
 
         var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
 
@@ -248,7 +277,11 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
             new(emptyZulu, "Zulu", 0, "OutOfStock", 0m),
             new(lowAlphaFirst, "Alpha", 5, "LowStock", 6.25m),
             new(lowAlphaSecond, "Alpha", 1, "LowStock", 2.50m),
-            new(lowZulu, "Zulu", 1, "LowStock", 12.34m)
+            new(lowZulu, "Zulu", 1, "LowStock", 12.34m),
+            new(lowLowercase, "alpha", 1, "LowStock", 1m),
+            // UTF-16 ordinal order puts the surrogate pair before U+E000, unlike UTF-8 byte order.
+            new(lowSupplementary, "\U00010000", 1, "LowStock", 1m),
+            new(lowPrivateUse, "\uE000", 1, "LowStock", 1m)
         ];
         Assert.Equal(expected, dashboard.ProductsNeedingAttention);
     }
@@ -270,6 +303,9 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Equal(HttpStatusCode.OK, priceResponse.StatusCode);
         var inventoryResponse = await _client.PutAsJsonAsync($"/products/{KeyboardId}/inventory", new { delta });
         Assert.Equal(HttpStatusCode.OK, inventoryResponse.StatusCode);
+
+        var details = await _client.GetFromJsonAsync<ProductDetails>($"/products/{KeyboardId}");
+        Assert.Equal(new ProductDetails(KeyboardId, "Mechanical Keyboard", 25.37m, expectedQuantity), details);
 
         var dashboard = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
 

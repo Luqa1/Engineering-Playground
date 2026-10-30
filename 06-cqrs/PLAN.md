@@ -1,6 +1,6 @@
 # CQRS Implementation Plan
 
-**Status: Work in Progress.** M1 through M4 are complete. M5 and later milestones remain planned; CQRS separation is not complete yet.
+**Status: Work in Progress.** M1 through M5 are complete. M6 through M8 remain planned.
 
 The scenario is a Product Catalog & Inventory Dashboard. The educational goal is to separate write-side business behavior from read-side presentation needs while retaining one API and one PostgreSQL database.
 
@@ -48,7 +48,7 @@ Completion: each write operation has clear intent and enforces its business rule
 
 ## M5 — Query Side
 
-**Status: Planned.**
+**Status: Completed.**
 
 - Introduce dedicated read DTOs for product details and the inventory dashboard.
 - Use efficient EF Core database projections to retrieve the data each view needs.
