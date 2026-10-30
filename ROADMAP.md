@@ -9,7 +9,7 @@ The roadmap tracks planned, independent Proofs of Concept. Each PoC will focus o
 3. [Optimistic Concurrency](03-optimistic-concurrency/) — **Status: Completed.**
 4. [Distributed Lock](04-distributed-lock/) — **Status: Completed.**
 5. [Saga Pattern](05-saga-pattern/) — **Status: Completed.**
-6. CQRS
+6. [CQRS](06-cqrs/) — **Status: In Progress.**
 
 ## Future Ideas
 
