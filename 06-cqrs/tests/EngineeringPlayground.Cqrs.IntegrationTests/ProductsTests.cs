@@ -117,7 +117,7 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var returned = await response.Content.ReadFromJsonAsync<Product>();
+        var returned = await response.Content.ReadFromJsonAsync<ProductResponse>();
         Assert.NotNull(returned);
         Assert.Equal(KeyboardId, returned.Id);
         Assert.Equal("Mechanical Keyboard", returned.Name);
@@ -138,7 +138,7 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
         var response = await _client.PutAsJsonAsync($"/products/{KeyboardId}/inventory", new { delta });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var returned = await response.Content.ReadFromJsonAsync<Product>();
+        var returned = await response.Content.ReadFromJsonAsync<ProductResponse>();
         Assert.NotNull(returned);
         Assert.Equal(KeyboardId, returned.Id);
         Assert.Equal("Mechanical Keyboard", returned.Name);
@@ -301,6 +301,19 @@ public sealed class ProductsTests(PostgresFixture postgres) : IClassFixture<Post
 
         var priceResponse = await _client.PutAsJsonAsync($"/products/{KeyboardId}/price", new { price = 25.37m });
         Assert.Equal(HttpStatusCode.OK, priceResponse.StatusCode);
+
+        // Each HTTP read uses a new request scope after the command has committed.
+        var detailsAfterPrice = await _client.GetFromJsonAsync<ProductDetails>($"/products/{KeyboardId}");
+        Assert.Equal(new ProductDetails(KeyboardId, "Mechanical Keyboard", 25.37m, 6), detailsAfterPrice);
+
+        var dashboardAfterPrice = await _client.GetFromJsonAsync<InventoryDashboardResponse>("/inventory/dashboard");
+        Assert.NotNull(dashboardAfterPrice);
+        Assert.Equal(1, dashboardAfterPrice.TotalProducts);
+        Assert.Equal(0, dashboardAfterPrice.OutOfStockCount);
+        Assert.Equal(0, dashboardAfterPrice.LowStockCount);
+        Assert.Equal(152.22m, dashboardAfterPrice.TotalInventoryValue);
+        Assert.Empty(dashboardAfterPrice.ProductsNeedingAttention);
+
         var inventoryResponse = await _client.PutAsJsonAsync($"/products/{KeyboardId}/inventory", new { delta });
         Assert.Equal(HttpStatusCode.OK, inventoryResponse.StatusCode);
 

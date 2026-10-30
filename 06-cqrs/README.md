@@ -1,6 +1,6 @@
 # CQRS — Product Catalog & Inventory
 
-**Status: Work in Progress.** M1 through M5 are complete. Commands coordinate domain writes, and concrete query handlers return dedicated read DTOs through EF Core projections. M6 through M8 remain planned. See [PLAN.md](PLAN.md).
+**Status: Work in Progress.** M1 through M6 are complete. Commands coordinate domain writes, and concrete query handlers return dedicated read DTOs through EF Core projections. M6 reviews these boundaries and verifies reads after each committed write. M7 and M8 remain planned. See [PLAN.md](PLAN.md).
 
 ## The Problem
 
@@ -60,6 +60,16 @@ HTTP → Controller → Query Handler → EF Core / PostgreSQL → Read DTO
 
 There is no dispatcher, handler interface, repository, or additional project. Command handlers do not depend on query handlers.
 
+## M6 separation review
+
+The existing handlers already keep write coordination and read presentation separate, so M6 retains their implementation and HTTP contracts. The two command handlers load tracked Product entities, invoke domain behavior, and save once before returning `ProductResponse`. The three query handlers use `AsNoTracking()`, project to consumer DTOs, and never mutate Product or save changes. Controllers map HTTP requests and results; Product alone enforces write invariants.
+
+`ProductResponse` describes the existing command success response. `ProductListItem`, `ProductDetails`, `InventoryDashboardResponse`, and `InventoryAttentionItemResponse` describe query results. These records carry data without mutation methods, business invariants, or dependencies on commands. Dashboard DTOs remain in `Responses/`; product read DTOs live in `Queries/Models/`.
+
+Commands and queries have no dependencies on one another. Both use the Infrastructure project's `CqrsDbContext` through scoped constructor injection, with a separate context instance per HTTP request. Domain has no EF Core or Infrastructure dependency: command handlers call domain methods and then persist the entity through Infrastructure. The shared database makes a subsequent request observe a completed prior write through ordinary queries; there is no separate read store to synchronize.
+
+CQRS here means separating intentions to change state from requests for information. Direct calls to concrete handlers are sufficient; MediatR is an optional dispatch library, not a requirement. Event Sourcing is also independent: this application stores current Product state rather than reconstructing it from an event history.
+
 ## Query Side
 
 `ProductsController` delegates GET requests to `GetProductsHandler` and `GetProductDetailsHandler`. The details operation takes a small `GetProductDetailsQuery(ProductId)` record and returns null for an unknown ID, which the controller maps to 404. List and dashboard handlers need only a cancellation token, so they do not introduce empty query records. All three concrete handlers are registered as scoped services and use constructor injection.
@@ -92,8 +102,7 @@ flowchart LR
     API -->|Commands| Commands[Concrete command handlers]
     API -->|Queries| Queries[Concrete query handlers]
     Commands --> Domain[Product domain behavior]
-    Domain --> EF[EF Core / CqrsDbContext]
-    Commands -->|Save changes| EF
+    Commands -->|Load tracked entity and save changes| EF[EF Core / CqrsDbContext]
     Queries -->|Read-only projections and aggregates| EF
     EF --> PostgreSQL[(One PostgreSQL database)]
     EF -->|Projected data| DTOs[Read DTOs]
@@ -131,6 +140,45 @@ sequenceDiagram
 ```
 
 For an unknown product the command handler returns null, and the controller returns 404 before any domain operation. Product reads use dedicated DTO projections through the same context type.
+
+Read-after-write uses consecutive HTTP requests and the same PostgreSQL database:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant HTTP as ProductsController / InventoryController
+    participant Commands as Command handlers
+    participant DB as PostgreSQL
+    participant Queries as Query handlers
+    Client->>HTTP: PUT /products/{id}/price
+    HTTP->>Commands: UpdateProductPriceCommand
+    Note over Commands: Load Product and call UpdatePrice
+    Commands->>DB: SaveChangesAsync: UPDATE and commit
+    DB-->>Commands: Write committed
+    Commands-->>HTTP: ProductResponse
+    HTTP-->>Client: 200
+    Client->>HTTP: GET /products/{id}
+    HTTP->>Queries: GetProductDetailsQuery
+    Queries->>DB: Read-only DTO projection
+    DB-->>Queries: Committed price
+    Queries-->>HTTP: ProductDetails
+    HTTP-->>Client: 200 with updated price
+    Client->>HTTP: PUT /products/{id}/inventory
+    HTTP->>Commands: AdjustInventoryCommand
+    Note over Commands: Load Product and call AdjustInventory
+    Commands->>DB: SaveChangesAsync: UPDATE and commit
+    DB-->>Commands: Write committed
+    Commands-->>HTTP: ProductResponse
+    HTTP-->>Client: 200
+    Client->>HTTP: GET /inventory/dashboard
+    HTTP->>Queries: GetInventoryDashboardHandler
+    Queries->>DB: SQL aggregates and attention projection
+    DB-->>Queries: Committed quantity and values
+    Queries-->>HTTP: InventoryDashboardResponse
+    HTTP-->>Client: 200 with updated dashboard
+```
+
+No polling, delays, or asynchronous synchronization are needed. The command finishes saving before returning success, and the following query reads that committed state. CQRS does not inherently require eventual consistency.
 
 The dashboard now executes database aggregates and a filtered projection:
 
@@ -281,11 +329,13 @@ xUnit integration tests use `WebApplicationFactory` and Testcontainers with real
 
 Coverage includes seeded reads, a single-product read, price persistence, positive/negative inventory adjustments, zero boundaries, rejected negative prices/inventory, overflow, missing request fields, unknown products, and repeatable migrations. The existing HTTP write tests now exercise command handlers and verify all product response fields and validation Problem Details. Persistence assertions use a fresh DbContext. Additional checks cover invalid initial names, prices, and quantities, and Production startup without a database connection for migrations. No EF Core InMemory provider is used.
 
-Product HTTP tests verify complete list/detail DTOs, seeded list ordering, and same-name ID ties using deliberately scrambled insertion order. The unknown-product test retains the read 404 assertion. Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties, case differences, and supplementary Unicode names; and an empty catalog. Read-after-write tests update both price and inventory through commands, then verify details and dashboard through fresh HTTP reads in all three stock categories. Existing write and domain tests remain in place.
+Product HTTP tests verify complete list/detail DTOs, seeded list ordering, and same-name ID ties using deliberately scrambled insertion order. The unknown-product test retains the read 404 assertion. Dashboard tests replace the seeded products inside each test's own database. Actual HTTP requests verify explicit decimal totals at quantities 0, 1, 5, and 6; a zero-price item; attention membership, classifications, values, and ordering including same-name ID ties, case differences, and supplementary Unicode names; and an empty catalog. Read-after-write tests verify details and dashboard immediately after the price command, then again after the inventory command in all three stock categories. Each GET uses a separate HTTP request scope; a fresh DbContext also verifies the final persisted price and quantity. Write response tests deserialize `ProductResponse` rather than the domain entity, keeping HTTP contracts independent of domain behavior. Existing write and domain tests remain in place.
 
 ## Trade-offs and limits
 
 Concrete command and query handlers add code in exchange for explicit responsibilities and thin controllers. Product queries are tailored to consumers while Product keeps write invariants. Handlers use DbContext directly because EF Core already provides the persistence/query operations this example needs. DTO projections still depend on the mapped schema and provider translation.
+
+The benefits are clearer boundaries, domain protection of writes, consumer-specific read models, and the ability to evolve read and write code independently. The costs are additional classes and explicit structure, duplicated representations of some Product fields, and maintenance of separate read DTOs. The query improvements come from projections and SQL aggregation, which are also possible without CQRS; separation alone does not improve performance.
 
 Compared with M3:
 
@@ -306,4 +356,4 @@ Use database projections and aggregates when views need selected fields, derived
 
 ## When not to use this approach
 
-Separate handlers may add little value for trivial CRUD with matching read/write needs. Do not use this example as a stock reservation system requiring correct concurrent allocation or a dashboard requiring a single consistent snapshot under concurrent writes. Separate read databases and asynchronous projections add costs that this catalog does not need. M6–M8 remain future work in the plan.
+Separate handlers may add little value for trivial CRUD with matching read/write needs. Do not use this example as a stock reservation system requiring correct concurrent allocation or a dashboard requiring a single consistent snapshot under concurrent writes. Separate read databases and asynchronous projections add costs that this catalog does not need. M7 and M8 remain future work in the plan.
